@@ -22,8 +22,11 @@ on:
         type: string
         default: "latest"
     secrets:
-      module_token:
-        description: "Fine-grained PAT with read access to private sbe-devops Terraform module repos. Required when any module source is a private GitHub repo."
+      gh_app_id:
+        description: "GitHub App ID for the sbe-devops module reader app. Required when any module source is a private GitHub repo."
+        required: false
+      gh_app_private_key:
+        description: "GitHub App private key (PEM) for the sbe-devops module reader app."
         required: false
 
 jobs:
@@ -51,11 +54,19 @@ jobs:
         run: terraform fmt -check -recursive
         working-directory: ${{ inputs.working_directory }}
 
+      - name: Generate token for private modules
+        id: module-token
+        if: secrets.gh_app_id != '' && secrets.gh_app_private_key != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.gh_app_id }}
+          private-key: ${{ secrets.gh_app_private_key }}
+          owner: sbe-devops
+
       - name: Configure git credentials for private modules
+        if: steps.module-token.outputs.token != ''
         run: |
-          if [ -n "${{ secrets.module_token }}" ]; then
-            git config --global url."https://oauth2:${{ secrets.module_token }}@github.com".insteadOf "https://github.com"
-          fi
+          git config --global url."https://oauth2:${{ steps.module-token.outputs.token }}@github.com".insteadOf "https://github.com"
 
       - name: Terraform Init
         run: terraform init
