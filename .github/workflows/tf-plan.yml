@@ -1,0 +1,123 @@
+name: Terraform Plan
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: "Path to the Terraform root module"
+        required: true
+        type: string
+      aws_region:
+        description: "AWS region"
+        required: false
+        type: string
+        default: "us-east-1"
+      role_arn:
+        description: "IAM role ARN to assume (planner role)"
+        required: true
+        type: string
+      terraform_version:
+        description: "Terraform version"
+        required: false
+        type: string
+        default: "latest"
+      tflint_version:
+        description: "TFLint version"
+        required: false
+        type: string
+        default: "latest"
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    environment: plan
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive
+        working-directory: ${{ inputs.working_directory }}
+        continue-on-error: true
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: ${{ inputs.tflint_version }}
+
+      - name: TFLint Init
+        run: tflint --init
+        working-directory: ${{ inputs.working_directory }}
+
+      - name: TFLint
+        id: tflint
+        run: tflint --format compact
+        working-directory: ${{ inputs.working_directory }}
+        continue-on-error: true
+
+      - name: Checkov Scan
+        id: checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: ${{ inputs.working_directory }}
+          framework: terraform
+          soft_fail: true
+          output_format: cli
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: ${{ inputs.working_directory }}
+
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -no-color -out=tfplan
+        working-directory: ${{ inputs.working_directory }}
+        continue-on-error: true
+
+      - name: Post Plan to PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            const fmt    = '${{ steps.fmt.outcome }}';
+            const tflint = '${{ steps.tflint.outcome }}';
+            const plan   = '${{ steps.plan.outcome }}';
+
+            const icon = (outcome) => outcome === 'success' ? '✅' : '❌';
+
+            const body = [
+              `### Terraform Plan — \`${{ inputs.working_directory }}\``,
+              '',
+              `| Check | Result |`,
+              `|-------|--------|`,
+              `| Format | ${icon(fmt)} \`${fmt}\` |`,
+              `| TFLint | ${icon(tflint)} \`${tflint}\` |`,
+              `| Plan   | ${icon(plan)} \`${plan}\` |`,
+            ].join('\n');
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+
+      - name: Fail if plan failed
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
