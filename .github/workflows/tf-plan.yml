@@ -42,6 +42,8 @@ jobs:
       id-token: write
       contents: read
       pull-requests: write
+    env:
+      GH_APP_ID: ${{ secrets.gh_app_id }}
 
     steps:
       - uses: actions/checkout@v4
@@ -88,7 +90,7 @@ jobs:
 
       - name: Generate token for private modules
         id: module-token
-        if: secrets.gh_app_id != '' && secrets.gh_app_private_key != ''
+        if: env.GH_APP_ID != ''
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.gh_app_id }}
@@ -96,7 +98,7 @@ jobs:
           owner: sbe-devops
 
       - name: Configure git credentials for private modules
-        if: steps.module-token.outputs.token != ''
+        if: steps.module-token.conclusion == 'success'
         run: |
           git config --global url."https://oauth2:${{ steps.module-token.outputs.token }}@github.com".insteadOf "https://github.com"
 
