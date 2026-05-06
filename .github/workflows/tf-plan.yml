@@ -83,6 +83,11 @@ jobs:
         run: terraform init
         working-directory: ${{ inputs.working_directory }}
 
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+        working-directory: ${{ inputs.working_directory }}
+
       - name: Terraform Plan
         id: plan
         run: terraform plan -no-color -out=tfplan
@@ -94,9 +99,10 @@ jobs:
         if: github.event_name == 'pull_request'
         with:
           script: |
-            const fmt    = '${{ steps.fmt.outcome }}';
-            const tflint = '${{ steps.tflint.outcome }}';
-            const plan   = '${{ steps.plan.outcome }}';
+            const fmt      = '${{ steps.fmt.outcome }}';
+            const tflint   = '${{ steps.tflint.outcome }}';
+            const validate = '${{ steps.validate.outcome }}';
+            const plan     = '${{ steps.plan.outcome }}';
 
             const icon = (outcome) => outcome === 'success' ? '✅' : '❌';
 
@@ -105,9 +111,10 @@ jobs:
               '',
               `| Check | Result |`,
               `|-------|--------|`,
-              `| Format | ${icon(fmt)} \`${fmt}\` |`,
-              `| TFLint | ${icon(tflint)} \`${tflint}\` |`,
-              `| Plan   | ${icon(plan)} \`${plan}\` |`,
+              `| Format   | ${icon(fmt)} \`${fmt}\` |`,
+              `| TFLint   | ${icon(tflint)} \`${tflint}\` |`,
+              `| Validate | ${icon(validate)} \`${validate}\` |`,
+              `| Plan     | ${icon(plan)} \`${plan}\` |`,
             ].join('\n');
 
             github.rest.issues.createComment({
