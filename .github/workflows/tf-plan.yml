@@ -26,6 +26,10 @@ on:
         required: false
         type: string
         default: "latest"
+    secrets:
+      module_token:
+        description: "Fine-grained PAT with read access to private sbe-devops Terraform module repos. Required when any module source is a private GitHub repo."
+        required: false
 
 jobs:
   plan:
@@ -78,6 +82,12 @@ jobs:
           framework: terraform
           soft_fail: true
           output_format: cli
+
+      - name: Configure git credentials for private modules
+        run: |
+          if [ -n "${{ secrets.module_token }}" ]; then
+            git config --global url."https://oauth2:${{ secrets.module_token }}@github.com".insteadOf "https://github.com"
+          fi
 
       - name: Terraform Init
         run: terraform init
