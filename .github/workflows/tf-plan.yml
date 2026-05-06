@@ -27,11 +27,8 @@ on:
         type: string
         default: "latest"
     secrets:
-      gh_app_id:
-        description: "GitHub App ID for the sbe-devops module reader app. Required when any module source is a private GitHub repo."
-        required: false
-      gh_app_private_key:
-        description: "GitHub App private key (PEM) for the sbe-devops module reader app."
+      module_token:
+        description: "Short-lived token with read access to private sbe-devops Terraform module repos. Generate via GitHub App in the calling workflow and pass here."
         required: false
 
 jobs:
@@ -43,7 +40,7 @@ jobs:
       contents: read
       pull-requests: write
     env:
-      GH_APP_ID: ${{ secrets.gh_app_id }}
+      MODULE_TOKEN: ${{ secrets.module_token }}
 
     steps:
       - uses: actions/checkout@v4
@@ -88,19 +85,10 @@ jobs:
           soft_fail: true
           output_format: cli
 
-      - name: Generate token for private modules
-        id: module-token
-        if: env.GH_APP_ID != ''
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.gh_app_id }}
-          private-key: ${{ secrets.gh_app_private_key }}
-          owner: sbe-devops
-
       - name: Configure git credentials for private modules
-        if: steps.module-token.conclusion == 'success'
+        if: env.MODULE_TOKEN != ''
         run: |
-          git config --global url."https://oauth2:${{ steps.module-token.outputs.token }}@github.com".insteadOf "https://github.com"
+          git config --global url."https://oauth2:${{ secrets.module_token }}@github.com".insteadOf "https://github.com"
 
       - name: Terraform Init
         run: terraform init
