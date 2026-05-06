@@ -72,7 +72,7 @@ jobs:
 
       - name: Checkov Scan
         id: checkov
-        uses: bridgecrewio/checkov-action@master
+        uses: bridgecrewio/checkov-action@v12.1347.0
         with:
           directory: ${{ inputs.working_directory }}
           framework: terraform
