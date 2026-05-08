@@ -71,7 +71,7 @@ jobs:
           git config --global url."https://oauth2:${{ steps.module-token.outputs.token }}@github.com".insteadOf "https://github.com"
 
       - name: Terraform Init
-        run: terraform init
+        run: terraform init -upgrade
         working-directory: ${{ inputs.working_directory }}
 
       - name: Terraform Apply
