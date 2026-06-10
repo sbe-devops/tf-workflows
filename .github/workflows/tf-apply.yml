@@ -21,16 +21,12 @@ on:
         required: false
         type: string
         default: "latest"
-    inputs:
       app_id:
         description: "GitHub App ID for reading private sbe-devops Terraform module repos. Pass via 'with:' using vars.SBE_DEVOPS_APP_ID."
         required: false
         type: string
         default: ""
     secrets:
-      app_id:
-        description: "Deprecated - pass app_id as an input instead."
-        required: false
       app_private_key:
         description: "GitHub App private key for reading private sbe-devops Terraform module repos."
         required: false
@@ -43,7 +39,7 @@ jobs:
       id-token: write
       contents: read
     env:
-      APP_ID: ${{ inputs.app_id || secrets.app_id }}
+      APP_ID: ${{ inputs.app_id }}
 
     steps:
       - uses: actions/checkout@v4
@@ -67,7 +63,7 @@ jobs:
         if: env.APP_ID != ''
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ inputs.app_id || secrets.app_id }}
+          app-id: ${{ inputs.app_id }}
           private-key: ${{ secrets.app_private_key }}
           owner: sbe-devops
 
