@@ -1,0 +1,115 @@
+name: Terraform Module CI
+
+# For TF MODULE repos (tf-aws-*), not consumer repos. A module has no backend
+# and no state of its own -- this validates the module code in isolation
+# (fmt, init -backend=false, validate, tflint, checkov). Consumer repos that
+# actually apply infra use tf-plan.yml / tf-apply.yml instead.
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: "Path to the Terraform module root"
+        required: false
+        type: string
+        default: "."
+      terraform_version:
+        description: "Terraform version"
+        required: false
+        type: string
+        default: "latest"
+      tflint_version:
+        description: "TFLint version"
+        required: false
+        type: string
+        default: "latest"
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive
+        working-directory: ${{ inputs.working_directory }}
+        continue-on-error: true
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: ${{ inputs.tflint_version }}
+
+      - name: TFLint Init
+        run: tflint --init
+        working-directory: ${{ inputs.working_directory }}
+
+      - name: TFLint
+        id: tflint
+        run: tflint --format compact
+        working-directory: ${{ inputs.working_directory }}
+        continue-on-error: true
+
+      - name: Checkov Scan
+        id: checkov
+        uses: bridgecrewio/checkov-action@v12.1347.0
+        with:
+          directory: ${{ inputs.working_directory }}
+          framework: terraform
+          soft_fail: true
+          output_format: cli
+
+      - name: Terraform Init
+        run: terraform init -backend=false
+        working-directory: ${{ inputs.working_directory }}
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+        working-directory: ${{ inputs.working_directory }}
+
+      - name: Post Results to PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            const fmt      = '${{ steps.fmt.outcome }}';
+            const tflint   = '${{ steps.tflint.outcome }}';
+            const validate = '${{ steps.validate.outcome }}';
+
+            const icon = (outcome) => outcome === 'success' ? '✅' : '❌';
+
+            const body = [
+              `### Terraform Module CI — \`${{ inputs.working_directory }}\``,
+              '',
+              `| Check | Result |`,
+              `|-------|--------|`,
+              `| Format   | ${icon(fmt)} \`${fmt}\` |`,
+              `| TFLint   | ${icon(tflint)} \`${tflint}\` |`,
+              `| Validate | ${icon(validate)} \`${validate}\` |`,
+            ].join('\n');
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+
+      - name: Fail if fmt failed
+        if: steps.fmt.outcome == 'failure'
+        run: exit 1
+
+      - name: Fail if validate failed
+        if: steps.validate.outcome == 'failure'
+        run: exit 1
