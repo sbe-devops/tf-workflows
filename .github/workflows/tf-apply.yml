@@ -35,6 +35,9 @@ jobs:
   apply:
     name: Apply
     runs-on: ubuntu-latest
+    # Hang protection — EKS/RDS creation genuinely runs long. Sized GENEROUSLY on purpose: a timeout that fires mid-apply leaves a partial apply AND a held state lock, which is worse than the hang.
+    # Without this a stuck job runs to GitHub's 360-minute default.
+    timeout-minutes: 60
     permissions:
       id-token: write
       contents: read

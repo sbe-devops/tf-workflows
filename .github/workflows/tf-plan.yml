@@ -40,6 +40,9 @@ jobs:
   plan:
     name: Plan
     runs-on: ubuntu-latest
+    # Hang protection — plan + tflint + checkov.
+    # Without this a stuck job runs to GitHub's 360-minute default.
+    timeout-minutes: 30
     permissions:
       id-token: write
       contents: read
