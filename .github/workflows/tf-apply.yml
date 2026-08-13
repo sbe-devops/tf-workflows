@@ -31,6 +31,23 @@ on:
         description: "GitHub App private key for reading private sbe-devops Terraform module repos."
         required: false
 
+# Terraform must never wait on stdin in CI. A stack with an undefaulted variable and no
+# CI-side value otherwise drops into interactive mode and reads a stdin that will never
+# answer — for the FULL job timeout. Fitbooks INFRA lost an evening to exactly this on
+# `Plan accounts (mgmt)`: three separate 30-minute hangs, the job's stdout showing the
+# variable's own description text mid-prompt.
+#
+# ⚠️ `-auto-approve` does NOT cover this. It suppresses the apply confirmation only —
+# a missing-variable prompt is raised separately, so an apply can hang MID-APPLY, after
+# the plan was approved. Strictly worse than hanging at plan.
+#
+# TF_INPUT at workflow level rather than a flag on each call site: it covers every
+# terraform command including ones added later, and cannot be forgotten on a new step.
+# `validate` and `fmt` do not accept -input=false at all, so the env var is the only
+# thing that covers them.
+env:
+  TF_INPUT: "0"
+
 jobs:
   apply:
     name: Apply
@@ -76,9 +93,9 @@ jobs:
           git config --global url."https://oauth2:${{ steps.module-token.outputs.token }}@github.com".insteadOf "https://github.com"
 
       - name: Terraform Init
-        run: terraform init -upgrade
+        run: terraform init -input=false -upgrade
         working-directory: ${{ inputs.working_directory }}
 
       - name: Terraform Apply
-        run: terraform apply -auto-approve
+        run: terraform apply -input=false -auto-approve
         working-directory: ${{ inputs.working_directory }}
