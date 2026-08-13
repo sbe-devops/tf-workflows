@@ -16,6 +16,9 @@ jobs:
       contents: write
       pull-requests: write
     runs-on: ubuntu-latest
+    # Hang protection — one API call.
+    # Without this a stuck job runs to GitHub's 360-minute default.
+    timeout-minutes: 5
     steps:
       - uses: release-drafter/release-drafter@v6
         env:

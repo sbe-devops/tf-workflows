@@ -24,10 +24,30 @@ on:
         type: string
         default: "latest"
 
+# Terraform must never wait on stdin in CI. A stack with an undefaulted variable and no
+# CI-side value otherwise drops into interactive mode and reads a stdin that will never
+# answer — for the FULL job timeout. Fitbooks INFRA lost an evening to exactly this on
+# `Plan accounts (mgmt)`: three separate 30-minute hangs, the job's stdout showing the
+# variable's own description text mid-prompt.
+#
+# ⚠️ `-auto-approve` does NOT cover this. It suppresses the apply confirmation only —
+# a missing-variable prompt is raised separately, so an apply can hang MID-APPLY, after
+# the plan was approved. Strictly worse than hanging at plan.
+#
+# TF_INPUT at workflow level rather than a flag on each call site: it covers every
+# terraform command including ones added later, and cannot be forgotten on a new step.
+# `validate` and `fmt` do not accept -input=false at all, so the env var is the only
+# thing that covers them.
+env:
+  TF_INPUT: "0"
+
 jobs:
   validate:
     name: Validate
     runs-on: ubuntu-latest
+    # Hang protection — fmt/validate/tflint/checkov on a single module.
+    # Without this a stuck job runs to GitHub's 360-minute default.
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: write
@@ -70,7 +90,7 @@ jobs:
           output_format: cli
 
       - name: Terraform Init
-        run: terraform init -backend=false
+        run: terraform init -input=false -backend=false
         working-directory: ${{ inputs.working_directory }}
 
       - name: Terraform Validate
