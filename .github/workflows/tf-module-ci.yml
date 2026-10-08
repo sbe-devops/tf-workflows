@@ -98,6 +98,56 @@ jobs:
         run: terraform validate -no-color
         working-directory: ${{ inputs.working_directory }}
 
+      # ── `terraform test`, when the module ships tests ────────────────────────
+      #
+      # 🔴 WHY THIS EXISTS. `tf-aws-ecr` shipped 1,239 lines of trust-policy test
+      # — a 491-line native suite, two golden policy documents and a mutation
+      # harness that each weaken the module AND regenerate the golden to agree,
+      # and `terraform test` catches all three anyway. Verified by running them
+      # on 2026-10-08.
+      #
+      # NONE OF IT RAN. This workflow did fmt, tflint, checkov, init and
+      # validate, so the PR went green on lint alone and a later commit could
+      # have reverted the trust policy to its wide-open form unnoticed.
+      #
+      # ⚠️ AND IT HID MORE THAN THE TESTS: a variable `validation` block fires at
+      # PLAN time with real values, not at `terraform validate`. So the module's
+      # own input guards were unexecuted too. `terraform test` is the only step
+      # here that reaches either.
+      #
+      # Auto-detected rather than opt-in: a `run_tests` input defaulting false
+      # leaves every existing consumer unprotected until it reads a changelog,
+      # and defaulting true would break the consumers that have no tests. The
+      # presence of the files IS the opt-in.
+      - name: Detect Terraform tests
+        id: has_tests
+        run: |
+          set -euo pipefail
+          # `terraform test` discovers `./*.tftest.hcl` plus its test directory,
+          # which defaults to `tests/`. maxdepth 2 covers exactly those.
+          count="$(find . -maxdepth 2 -name '*.tftest.hcl' -type f | wc -l | tr -d '[:space:]')"
+          if [ "$count" -gt 0 ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::found $count terraform test file(s)"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no *.tftest.hcl found — skipping terraform test"
+          fi
+        working-directory: ${{ inputs.working_directory }}
+
+      # ⚠️ TESTS MUST MOCK THEIR PROVIDERS. This job holds no AWS credentials, by
+      # design — CI must be runnable on a PR from anyone. A `run` block that
+      # reaches a real provider will fail here, and that failure is correct:
+      # it means the test needs `mock_provider`, not that it needs secrets.
+      - name: Terraform Test
+        id: tftest
+        if: steps.has_tests.outputs.found == 'true'
+        run: terraform test -no-color
+        working-directory: ${{ inputs.working_directory }}
+        # Soft here, hard below — matching fmt/validate, so the PR comment still
+        # posts with every result before the job fails.
+        continue-on-error: true
+
       - name: Post Results to PR
         uses: actions/github-script@v7
         if: github.event_name == 'pull_request'
@@ -106,8 +156,16 @@ jobs:
             const fmt      = '${{ steps.fmt.outcome }}';
             const tflint   = '${{ steps.tflint.outcome }}';
             const validate = '${{ steps.validate.outcome }}';
+            const tftest   = '${{ steps.tftest.outcome }}';
 
             const icon = (outcome) => outcome === 'success' ? '✅' : '❌';
+
+            // A skipped test step means the module ships no tests. Rendering
+            // that as ❌ would read as a failure, and rendering it as ✅ would
+            // read as coverage. It is neither.
+            const testRow = tftest === 'skipped'
+              ? `| Test     | ⏭️ \`no *.tftest.hcl\` |`
+              : `| Test     | ${icon(tftest)} \`${tftest}\` |`;
 
             const body = [
               `### Terraform Module CI — \`${{ inputs.working_directory }}\``,
@@ -117,6 +175,7 @@ jobs:
               `| Format   | ${icon(fmt)} \`${fmt}\` |`,
               `| TFLint   | ${icon(tflint)} \`${tflint}\` |`,
               `| Validate | ${icon(validate)} \`${validate}\` |`,
+              testRow,
             ].join('\n');
 
             github.rest.issues.createComment({
@@ -132,4 +191,14 @@ jobs:
 
       - name: Fail if validate failed
         if: steps.validate.outcome == 'failure'
+        run: exit 1
+
+      # 🔴 A TEST THAT CANNOT FAIL THE BUILD IS NOT A GATE. `continue-on-error`
+      # above exists only so the PR comment posts first; without this step the
+      # whole thing would be decorative, which is the defect it was added to fix.
+      #
+      # Note `== 'failure'` and not `!= 'success'`: a SKIPPED step must not fail
+      # the job, or every module without tests breaks on the first consumer bump.
+      - name: Fail if terraform test failed
+        if: steps.tftest.outcome == 'failure'
         run: exit 1

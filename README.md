@@ -42,6 +42,33 @@ Intended triggers: `on: push` to `main` for test/dev; `on: workflow_dispatch` wi
 
 ---
 
+### `tf-module-ci.yml`
+
+CI for a **module** repo (`tf-aws-*`), as opposed to a consumer/project repo. Validates the module in
+isolation — **no backend, no state, no AWS credentials**:
+
+| step | gate |
+|---|---|
+| `terraform fmt -check -recursive` | 🔴 **fails the job** |
+| TFLint | reported only — see *Known gaps* in the CHANGELOG |
+| Checkov | reported only (`soft_fail: true`) |
+| `terraform init -backend=false` | 🔴 fails the job |
+| `terraform validate` | 🔴 **fails the job** |
+| `terraform test` *(only when `*.tftest.hcl` exists)* | 🔴 **fails the job** |
+
+**`terraform test` is auto-detected**, not opt-in: `find . -maxdepth 2 -name '*.tftest.hcl'` covers the
+module root and the default `tests/` directory. A module with no tests **skips** the step and is
+unaffected — the PR comment shows `⏭️ no *.tftest.hcl`, which is neither a pass nor a failure.
+
+> ⚠️ **It is the only step that reaches two things the others cannot.** A variable `validation` block
+> fires at **plan** time with real values, so `terraform validate` never exercises a module's input
+> guards; and a native test suite is invisible to every other step here. A module can therefore ship a
+> large, correct, passing test estate that CI never runs — which is exactly what `tf-aws-ecr` did.
+
+> ⚠️ **Tests must mock their providers.** This job holds no AWS credentials by design, so that CI is
+> runnable on a PR from anyone. A `run` block reaching a real provider will fail, and that failure is
+> correct: it needs `mock_provider`, not secrets.
+
 ## Usage
 
 ### Calling `tf-plan.yml`
@@ -138,6 +165,9 @@ jobs:
 | `tf-apply.yml` | `role_arn` | `string` | yes | — | IAM role ARN to assume — must be the enforcer role |
 | `tf-apply.yml` | `aws_region` | `string` | no | `us-east-1` | AWS region passed to `aws-actions/configure-aws-credentials` |
 | `tf-apply.yml` | `terraform_version` | `string` | no | `latest` | Terraform version for `hashicorp/setup-terraform` |
+| `tf-module-ci.yml` | `working_directory` | `string` | yes | — | Path to the module (relative to the repo root) |
+| `tf-module-ci.yml` | `terraform_version` | `string` | no | `latest` | Terraform version for `hashicorp/setup-terraform` |
+| `tf-module-ci.yml` | `tflint_version` | `string` | no | `latest` | TFLint version for `terraform-linters/setup-tflint` |
 
 ---
 
