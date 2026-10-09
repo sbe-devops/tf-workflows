@@ -10,6 +10,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This re
 
 ### Added
 
+- **`tf-module-ci.yml`'s `terraform test` gate now detects both test syntaxes and fails when zero runs execute.** Two ways the gate shipped in `v0.11.0`'s predecessor could pass without testing anything (PROOF, review round 2 — which arrived after that PR had merged):
+
+  · **`*.tftest.json` was not detected at all.** A JSON-only suite was skipped and the job went **green on no tests**. Detection now matches `*.tftest.hcl` **and** `*.tftest.json`.
+
+  · **`-maxdepth 2` found more than `terraform test` runs, not less.** `examples/foo.tftest.hcl` was detected, terraform ignored it, and the run executed **zero** tests and still exited 0 — printing `Success! 0 passed, 0 failed.` Detection is now depth-unlimited *on purpose*: a test file anywhere means the module **intends** tests, and the new assertion reports it when terraform does not run them, rather than detection quietly deciding which paths count.
+
+  🔴 **New step: `Assert the tests actually executed`.** It parses the run summary and **fails when `passed + failed == 0`**, when no summary can be found at all, and when no output was captured. The PR comment gains a third state — `❌ files found, zero runs executed` — because rendering that as a pass is the defect and rendering it as a skip would hide it.
+
+  *Why it matters beyond this repo:* the original comment claimed `-maxdepth 2` covered "exactly" what terraform runs. It was wrong in both directions, and nothing could have caught it, because **the gate's failure mode was to pass.** `tests/` + `ci.yml` now run both gates' own bytes and 6 mutations against them.
+
 - `tf-module-ci.yml` now runs **`terraform test`** when the module ships `*.tftest.hcl` files, and **fails the job** when they fail. Auto-detected (`find . -maxdepth 2 -name '*.tftest.hcl'`), which covers both the module root and the default `tests/` directory — no new input, because the presence of the files is the opt-in. A module with no tests **skips** the step and is unaffected; the PR comment renders that as `⏭️ no *.tftest.hcl` rather than as a pass or a fail.
 
   **Why:** `tf-aws-ecr#3` shipped 1,239 lines of trust-policy test — a 491-line native suite, two golden policy documents, and a mutation harness whose weakenings `terraform test` catches *even when the golden is regenerated to agree* — and **this workflow ran none of it.** The PR went green on `fmt`/TFLint/Checkov/`validate` alone, so a later commit could have reverted the trust policy to its wide-open form unnoticed.
