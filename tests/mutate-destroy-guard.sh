@@ -35,7 +35,7 @@ survivors=()
 # completely healthy. A mutation that silently never runs is the same class of
 # failure as a sed that changes nothing, and the harness could not see it.
 # Keep this in step with the mutate/mutate_prog calls below.
-EXPECTED_MUTATIONS=26
+EXPECTED_MUTATIONS=27
 
 tmproot="$(mktemp -d)"
 trap 'rm -rf "$tmproot"' EXIT
@@ -220,7 +220,14 @@ mutate_prog "M25 · a BLANK line, then continue-on-error on the plan step" \
 
 mutate_prog "M26 · a step-indented COMMENT, then if: always() on the apply step" \
   'a comment does not end a step either' \
-  perl -0pi -e 's/( +)- name: Terraform Apply \(the saved destroy plan\)\n/$1- name: Terraform Apply (the saved destroy plan)\n$1  # keep going even if the plan refused\n$1  if: always()\n/'
+  perl -0pi -e 's/( +)- name: Terraform Apply \(the saved destroy plan\)\n/$1- name: Terraform Apply (the saved destroy plan)\n$1# keep going even if the plan refused\n$1  if: always()\n/'
+
+# 🔴 PROOF r4's survivor: a SECOND apply step. Both content pins still pass,
+# because each only says "the step with this name has this body". Only the
+# ordered step-list pin can see it.
+mutate_prog "M27 · a SECOND apply step is appended" \
+  'two pinned blocks do not stop a third step being added' \
+  perl -0pi -e 's/(        run: terraform apply -input=false destroy\.tfplan\n        working-directory: \$\{\{ inputs\.working_directory \}\}\n)/$1\n      - name: Terraform Apply again, whatever happened\n        if: always()\n        run: terraform apply -input=false destroy.tfplan\n        working-directory: \$\{\{ inputs.working_directory \}\}\n/'
 
 mutate_prog "M14 · checkout is hoisted above the guard" \
   "a refused run must never reach a checkout or a credential" \

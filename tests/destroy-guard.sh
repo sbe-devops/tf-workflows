@@ -353,6 +353,38 @@ assert_step_block() {
   fi
 }
 
+# 🔴 THE WHOLE STEP LIST IS PINNED, IN ORDER — because pinning two blocks does
+# not stop a THIRD step being added. PROOF r4: a SECOND apply step
+# (`if: always()` + `terraform apply destroy.tfplan`) passes both content pins
+# untouched, since each pin only says "the step with this name has this body".
+# An allow-list of the structure is the only shape that refuses what nobody
+# predicted — the same reason tf-aws-ecr's trust test asserts set EQUALITY
+# rather than containment.
+assert_step_list() {
+  local expected="$1" got
+  got="$(grep -E '^      - (name|uses): ' "$workflow" | sed -e 's/^      - //')"
+  if [ "$got" = "$expected" ]; then
+    printf '✅ pinned   the destroy job runs exactly these steps, in this order\n'
+    pass=$((pass + 1))
+  else
+    printf '❌ FAIL  the step list changed\n        expected:\n%s\n        got:\n%s\n' "$expected" "$got"
+    fail=$((fail + 1))
+  fi
+}
+
+assert_step_list 'name: Refuse a working_directory that is not on the caller'"'"'s allow-list
+uses: actions/checkout@v4
+name: Configure AWS credentials
+uses: hashicorp/setup-terraform@v3
+name: Generate token for private modules
+name: Configure git credentials for private modules
+name: Terraform Init
+name: Refuse a workspace layout the allow-list cannot describe
+name: Terraform Plan (destroy)
+name: Render the destroy plan
+name: Upload the destroy plan
+name: Terraform Apply (the saved destroy plan)'
+
 # shellcheck disable=SC2016  # the ${{ … }} in these literals is YAML the
 # workflow contains, not a shell expansion — expanding it would defeat the pin.
 # 🔑 THESE LITERALS ARE THE INVARIANT. A reviewer reading a diff here is reading
