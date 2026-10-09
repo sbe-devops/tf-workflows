@@ -77,22 +77,58 @@ cosmetics strands live resources until someone edits the stack.
 | an absolute path | **refused** — paths are relative to the repo root |
 | a **glob** in the list *(`tf/*`)* | 🔴 **hard ERROR naming globs.** *Exact matching would refuse it anyway, but silently — and a caller who believes patterns work will "fix" it by widening something else* |
 | an empty or whitespace-only list | **refused.** *Fail closed: nothing is destroyable* |
+| a call at any ref other than the **default branch** | **refused.** *`workflow_dispatch` runs at whatever ref the dispatcher picks, and the allow-list is read from the caller's file **at that ref** — so on a branch, adding `tf/aws-bootstrap` to it needs no review at all. The allow-list is only a control where changing it needs a reviewed PR* |
+| a stack with **more than the `default` workspace** | **refused.** *See below — the allow-list keys on a directory, state keys on (directory × workspace)* |
 
 Only whitespace, a leading `./` and a trailing `/` are normalised, identically on both sides. No case
 folding *(Linux paths are case-sensitive)*, no symlink resolution, no glob expansion.
 
-**It is tested, and the tests are tested** *(`tests/`, run on every PR by `ci.yml`)*:
-`tests/destroy-guard.sh` **extracts the guard's own bytes from the workflow and runs them** — 35
-candidate/allow-list pairs, plus 11 assertions on the wiring those bytes cannot see (which input feeds
-which variable; that the guard precedes checkout, credentials and `init`; that the apply applies the
-saved plan). `tests/mutate-destroy-guard.sh` then weakens the guard **14 ways** and requires the suite
-to go red each time. *Mapping `ALLOW_LIST` to the wrong input passes all 35 logic cases and is caught
-only by the wiring assertions — which is why they exist.*
+> ### 🔴 **NEVER LIST A STACK THAT MANAGES ITS OWN BACKEND.**
+> *Fitbooks' `terraform/tst/bootstrap` is the concrete case: it creates the S3 state bucket and the
+> DynamoDB lock table that **every other stack's state lives in**.* **Destroying it does not remove one
+> environment — it removes the ability to plan, apply or destroy any of them**, and the destroy's own
+> state is in the bucket it is deleting. The same goes for any `tf-aws-github-oidc` stack: that one takes
+> the CI roles, so the pipeline cannot be used to put it back.
+> ⚠️ **This is the one mistake the allow-list cannot catch for you** — the workflow has no way to know
+> which of your directories owns the backend. *`tf-aws-bootstrap` also carries `prevent_destroy` on those
+> resources (belt and braces, INFRA), but `prevent_destroy` is in the module, and a caller who removed it
+> would be left with only this line.*
 
-⚠️ **What is NOT proven, stated plainly:** a reusable workflow cannot be run end-to-end from a test,
-and a `uses:` job cannot be marked `continue-on-error`, so **no in-repo CI job performs a live
-refusal**. The wiring is asserted statically instead, and the first live exercise is the first real
-caller.
+**Workspaces: a stack with more than `default` is refused, after `init`.**
+
+| | |
+|---|---|
+| why | *the allow-list is keyed on a **directory**; Terraform state is keyed on **(directory × workspace)**. For a workspace-per-environment stack, one entry would authorise **every** environment in that directory* |
+| and worse | *a fresh `init` selects `default`, so the run would destroy whatever lives in `default` while the operator was thinking of `staging`* |
+| why it refuses rather than selecting | *picking a workspace from a directory-keyed allow-list is a guess. The allow-list would have to grow a workspace dimension first* |
+| where it runs | **after `init`**, because `terraform workspace list` reads the backend and needs credentials. *Everything checkable before a credential exists already is* |
+
+*Give such a stack one directory per environment, or say so and the allow-list can learn workspaces.*
+
+**It is tested, and the tests are tested** *(`tests/`, run on every PR by `ci.yml`)*. Both suites
+**extract the guards' own bytes out of the workflow and execute them**, so there is no second copy of
+the logic to drift from, and both extractors **fail closed** if the markers move, the body shrinks, or a
+`${{ … }}` appears inside it:
+
+| suite | what it runs | count |
+|---|---|---|
+| `tests/destroy-guard.sh` | the pre-credential guard: allow-list matching, traversal, globs, the default-branch ref check — plus assertions on the **wiring** those bytes cannot see *(which input feeds which variable, that the guard precedes checkout/credentials/`init`, that the apply applies the saved plan)* | **58** |
+| `tests/workspace-guard.sh` | the post-`init` workspace guard, against a **stubbed `terraform`** that reproduces every layout — workspace-per-env, a selected non-default workspace, a backend that errors | **11** |
+| `tests/mutate-destroy-guard.sh` | weakens a guard **19 ways** and requires a suite to go red each time, printing the diff it applied | **19 killed, 0 survived** |
+
+🔑 *Mapping `ALLOW_LIST` to the wrong input passes all 35 allow-list cases and is caught **only** by the
+wiring assertions — which is why both halves exist.*
+
+**One live refusal is measured, and exactly one.** A throwaway branch dispatched this workflow at
+`tf/aws-bootstrap` with the path absent from the allow-list *(run `37977151072`, branch since deleted)*.
+The guard refused and **every later step shows `skipped`** — no checkout, no credentials, no `init`, no
+plan, no apply.
+
+⚠️ **What that run did NOT prove:** it refused on the **ref** check, because a probe branch is by
+definition not the default branch, so the **allow-list** refusal remains shell-tested rather than
+observed live. A `uses:` job cannot be marked `continue-on-error`, so an in-repo "expect this to fail"
+job would just be a red check; the honest position is that the allow-list path is proven by its own bytes
+plus static wiring, and the first allow-list refusal in anger will be the first real caller's.
 
 ---
 
@@ -196,13 +232,17 @@ on:
 
 jobs:
   destroy-test:
-    environment: teardown      # GitHub Environment with required reviewers
     permissions:
       id-token: write
       contents: read
     uses: sbe-devops/tf-workflows/.github/workflows/tf-destroy.yml@v0.11.0
     with:
       working_directory: ${{ inputs.working_directory }}
+      # 🔴 THE REVIEWER GATE IS AN INPUT, NOT A JOB KEY. `environment:` is not
+      # valid on a job that is a `uses:` call, so it is declared inside the
+      # reusable workflow and selected from here. Omit it and there is NO
+      # reviewer gate — the job runs, measured, rather than failing.
+      environment: teardown
       # 🔴 THE ALLOW-LIST. Exact paths, one per line. Anything absent is refused, and
       # adding a line is a reviewed PR to this file.
       destroyable_directories: |
@@ -220,6 +260,18 @@ jobs:
 > `choice` stops a typo at dispatch time; the allow-list stops anything else, including a caller
 > wired to free-text input, a `push` trigger, or another workflow calling this one. **Only the
 > allow-list is enforced inside the reusable workflow**, where a consumer repo cannot edit it.*
+
+⚠️ **Dispatch it from the DEFAULT BRANCH.** A `workflow_dispatch` run uses the workflow file — and
+therefore the allow-list — from whichever ref you pick, so the guard refuses anything else. *That is the
+difference between a list a reviewer approved and a list the dispatcher wrote.*
+
+> ### 🔴 **THE FIRST CALLER WILL FAIL ON IAM, AND THAT IS EXPECTED.**
+> *The enforcer role's trust policy currently admits `tf-apply.yml` by `job_workflow_ref`, which does not
+> match `tf-destroy.yml`.* **Until that trust is widened (INFRA owns it), the `Configure AWS credentials`
+> step fails with `Not authorized to perform sts:AssumeRoleWithWebIdentity`.**
+> ✅ *This is the right order: the guard, the tests and the review land first, and the credential that
+> makes it real is granted last. A destroy path that could assume the enforcer role before anyone had
+> reviewed the guard would be the wrong way round.*
 
 ---
 
@@ -241,6 +293,7 @@ jobs:
 | `tf-destroy.yml` | `role_arn` | `string` | **yes** | — | IAM role ARN to assume — must be the enforcer role |
 | `tf-destroy.yml` | `aws_region` | `string` | no | `us-east-1` | AWS region passed to `aws-actions/configure-aws-credentials` |
 | `tf-destroy.yml` | `terraform_version` | `string` | no | `latest` | Terraform version for `hashicorp/setup-terraform` |
+| `tf-destroy.yml` | `environment` | `string` | no | `""` | GitHub Environment for the destroy job, for a required-reviewer gate. **Declared here because `environment:` is not valid on a `uses:` job.** Empty means no environment and **no gate** |
 | `tf-destroy.yml` | `app_id` | `string` | no | `""` | GitHub App ID for reading private `sbe-devops` module repos. Pass via `with:` using `vars.SBE_DEVOPS_APP_ID` |
 
 ---

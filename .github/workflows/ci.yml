@@ -30,8 +30,15 @@ jobs:
       - name: tests/destroy-guard.sh
         run: tests/destroy-guard.sh
 
-      # Arm 2 — does arm 1 actually CATCH a weakened guard? 14 mutations, each required to
-      # turn arm 1 red. This is the step that keeps "tests pass" from meaning "tests exist".
+      # T1's guard: the allow-list is keyed on a directory, but state is keyed on
+      # (directory × workspace). Its only input is `terraform workspace list`, so a stub
+      # terraform on PATH reproduces every layout — no state, no credentials.
+      - name: tests/workspace-guard.sh
+        run: tests/workspace-guard.sh
+
+      # Arm 2 — do arms 1 and 3 actually CATCH a weakened guard? 19 mutations, each
+      # required to turn one of them red. This is the step that keeps "tests pass" from
+      # meaning "tests exist".
       - name: tests/mutate-destroy-guard.sh
         run: tests/mutate-destroy-guard.sh
 

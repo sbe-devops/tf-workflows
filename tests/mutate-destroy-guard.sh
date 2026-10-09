@@ -60,6 +60,7 @@ _mutate() {
   mkdir -p "$work/.github/workflows" "$work/tests"
   cp "$root/$workflow_rel" "$work/$workflow_rel"
   cp "$here/destroy-guard.sh" "$work/tests/destroy-guard.sh"
+  cp "$here/workspace-guard.sh" "$work/tests/workspace-guard.sh"
 
   "$@" "$work/$workflow_rel"
   rm -f "$work/$workflow_rel.bak"
@@ -76,9 +77,17 @@ _mutate() {
   printf '— %s\n' "$name"
   printf '%s\n' "$diff_out" | sed 's/^/        /'
 
-  local out rc
+  # BOTH suites: a mutation to either guard must be caught by something, and a
+  # harness that only runs one of them would report the other as unkillable.
+  local out out2 rc rc2
   out="$(cd "$work" && bash tests/destroy-guard.sh 2>&1)"
   rc=$?
+  out2="$(cd "$work" && bash tests/workspace-guard.sh 2>&1)"
+  rc2=$?
+  if [ "$rc" -eq 0 ] && [ "$rc2" -ne 0 ]; then
+    rc=$rc2
+    out=$out2
+  fi
   if [ "$rc" -ne 0 ]; then
     printf '  ✅ KILLED (exit %s) — %s\n' "$rc" "$why"
     printf '%s\n' "$out" | grep -E '^(❌ FAIL|FATAL)' | head -4 | sed 's/^/        /'
@@ -147,6 +156,28 @@ mutate "M12 · the allow-list becomes optional" \
 mutate "M13 · the saved plan is discarded and the destroy is re-evaluated" \
   's|terraform apply -input=false destroy.tfplan|terraform destroy -input=false -auto-approve|' \
   "the uploaded artifact must be what actually ran"
+
+# ── M15–M19 attack the two guards added in r2 ───────────────────────────────────────────
+
+mutate "M15 · the default-branch ref check is dropped" \
+  '/The destroy allow-list is read from the caller/s/refuse/: /' \
+  "workflow_dispatch runs at any ref, so an unreviewed branch could add tf/aws-bootstrap to the allow-list"
+
+mutate "M16 · an unknown default branch is assumed to be main" \
+  's|if \[ -z "${DEFAULT_BRANCH:-}" \]; then|DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"; if false; then|' \
+  "a repo whose default branch is master or trunk would be guessed at"
+
+mutate "M17 · the workspace count check is dropped" \
+  's|if \[ "$count" -ne 1 \] \|\| \[ "$(printf .%s. "$names" \| tr -d . .)" != "default" \]; then|if false; then|' \
+  "one allow-list entry would authorise every environment in a workspace-per-env stack"
+
+mutate "M18 · TF_WORKSPACE is ignored" \
+  's|if \[ -n "${TF_WORKSPACE:-}" \] && \[ "$TF_WORKSPACE" != "default" \]; then|if false; then|' \
+  "TF_WORKSPACE moves the target away from the state the allow-list authorised"
+
+mutate "M19 · a failed workspace list is treated as fine" \
+  's|if ! raw="$(terraform workspace list 2>&1)"; then|raw="$(terraform workspace list 2>\&1 \|\| true)"; if false; then|' \
+  "not being able to establish the target is not permission to destroy it"
 
 mutate_prog "M14 · checkout is hoisted above the guard" \
   "a refused run must never reach a checkout or a credential" \

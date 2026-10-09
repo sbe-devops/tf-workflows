@@ -53,15 +53,22 @@ printf 'extracted %s lines of guard from %s\n\n' "$lines" "${workflow#"$here/../
 pass=0
 fail=0
 
-# run_guard <candidate> <allow-list>
+# run_guard <candidate> <allow-list> [caller-ref] [default-branch]
+#
+# The ref pair defaults to a valid default-branch call, so every case below
+# isolates the thing it names. The ref check has its own section.
 run_guard() {
-  CANDIDATE="$1" ALLOW_LIST="$2" bash -c "$guard" 2>&1
+  CANDIDATE="$1" ALLOW_LIST="$2" \
+    CALLER_REF="${3-refs/heads/main}" DEFAULT_BRANCH="${4-main}" \
+    bash -c "$guard" 2>&1
 }
 
 # refuses <name> <candidate> <allow-list> [expected substring in the message]
 refuses() {
   local name="$1" candidate="$2" allow="$3" expect="${4:-}" out rc
-  out="$(run_guard "$candidate" "$allow")"
+  # Unset-only defaults: an explicitly EMPTY ref or default branch is a case,
+  # not a missing argument, and `${5:-x}` would have silently substituted it.
+  out="$(run_guard "$candidate" "$allow" "${5-refs/heads/main}" "${6-main}")"
   rc=$?
   if [ "$rc" -eq 0 ]; then
     printf '❌ FAIL  %s\n        ALLOWED what must be refused (exit 0): candidate=%s\n' "$name" "$candidate"
@@ -178,6 +185,40 @@ allows "no trailing newline on the last entry" "terraform/poc" "$(printf 'terraf
 allows "a single-entry allow-list"           "tf/aws-vpc" "tf/aws-vpc"
 
 echo
+echo "── the allow-list is only a control at the ref where changing it needs review ──────"
+# 🔴 PROOF r2: `workflow_dispatch` runs at ANY ref, and the allow-list is read
+# from the caller's file AT THAT REF — so a branch that adds tf/aws-bootstrap to
+# it needs no review, just a push and a dispatch.
+refuses "a feature branch, even with the path allow-listed" \
+  "terraform/test" "$ALLOW_FITBOOKS" "not at refs/heads/main" "refs/heads/patch/sneak-bootstrap" "main"
+refuses "a tag" \
+  "terraform/test" "$ALLOW_FITBOOKS" "not at refs/heads/main" "refs/tags/v1.0.0" "main"
+refuses "a PR merge ref" \
+  "terraform/test" "$ALLOW_FITBOOKS" "not at refs/heads/main" "refs/pull/7/merge" "main"
+refuses "the default branch of a DIFFERENT name than the ref" \
+  "terraform/test" "$ALLOW_FITBOOKS" "not at refs/heads/trunk" "refs/heads/main" "trunk"
+refuses "an unknown default branch is not assumed to be main" \
+  "terraform/test" "$ALLOW_FITBOOKS" "cannot determine this repository's default branch" "refs/heads/main" ""
+refuses "an empty caller ref" \
+  "terraform/test" "$ALLOW_FITBOOKS" "not at refs/heads/main" " " "main"
+# …and a repo whose default branch is not `main` still works on its own default.
+allows_at_ref() {
+  local name="$1" ref="$2" def="$3" out rc
+  out="$(run_guard "terraform/test" "$ALLOW_FITBOOKS" "$ref" "$def")"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '❌ FAIL  %s\n        REFUSED (exit %s): %s\n' "$name" "$rc" "$out"
+    fail=$((fail + 1))
+    return
+  fi
+  printf '✅ allowed  %s\n' "$name"
+  pass=$((pass + 1))
+}
+allows_at_ref "the default branch, main"   "refs/heads/main"   "main"
+allows_at_ref "the default branch, master" "refs/heads/master" "master"
+allows_at_ref "the default branch, trunk"  "refs/heads/trunk"  "trunk"
+
+echo
 echo "── the wiring, which the guard's own bytes CANNOT see ──────────────────────────────"
 # 🔑 Everything above proves the guard LOGIC. None of it would notice ALLOW_LIST being
 # mapped to the wrong input, or the guard being moved below `configure-aws-credentials`,
@@ -214,6 +255,15 @@ denies() {
   fi
 }
 
+asserts "CALLER_REF comes from github.ref" \
+  '^ +CALLER_REF: \$\{\{ github\.ref \}\}$' \
+  "the ref check would otherwise read an empty string and refuse everything, or nothing and refuse nothing"
+asserts "DEFAULT_BRANCH comes from the event payload" \
+  '^ +DEFAULT_BRANCH: \$\{\{ github\.event\.repository\.default_branch \}\}$' \
+  "hard-coding main here would be a guess about every consumer's repo"
+asserts "the workspace guard exists and runs after init" \
+  '^ +- name: Refuse a workspace layout the allow-list cannot describe$' \
+  "T1: a directory-keyed allow-list cannot describe (directory x workspace)"
 asserts "CANDIDATE comes from inputs.working_directory" \
   '^ +CANDIDATE: \$\{\{ inputs\.working_directory \}\}$' \
   "the guard would otherwise check a different string than the one terraform runs in"
