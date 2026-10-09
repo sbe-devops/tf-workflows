@@ -1,0 +1,46 @@
+name: CI
+
+# This repo publishes reusable workflows and has run no CI of its own: a change to
+# `tf-module-ci.yml` was reviewed by eye and released. The two test gates this PR
+# fixes were both "green by not looking", so the fix ships with something that runs.
+#
+# ⚠️ CONFLICT EXPECTED WITH `tf-workflows#6`, which also adds this file (for the
+# `tf-destroy.yml` guards). The resolution is a UNION of the steps — both PRs' test
+# scripts, one job. Whichever merges second does that merge; they do not overlap in
+# content, only in filename.
+#
+# The test scripts are deliberately dependency-free — bash, awk, sed, diff, perl.
+# A gate whose test needs a toolchain stops being tested the first time the
+# toolchain breaks.
+
+on:
+  # No `branches:` filter: the filter matches the PR's BASE, so filtering on main
+  # means a stacked PR runs no checks at all and looks green by having nothing to
+  # be red.
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  module-ci-gates:
+    name: tf-module-ci test gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # Both gates' own bytes, extracted out of tf-module-ci.yml: test-file
+      # detection against real directory fixtures, and the zero-runs assertion
+      # against captured `terraform test` output.
+      - name: tests/module-ci-guard.sh
+        run: tests/module-ci-guard.sh
+
+      # And whether that suite would actually catch a weakened gate.
+      - name: tests/mutate-module-ci.sh
+        run: tests/mutate-module-ci.sh
+
+      - name: Shellcheck the test scripts
+        run: shellcheck tests/*.sh
