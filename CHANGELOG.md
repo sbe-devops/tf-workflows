@@ -36,9 +36,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This re
 
   **One live refusal is measured** — a throwaway branch dispatched the workflow at `tf/aws-bootstrap` (run `37977151072`, branch deleted) and every step after the guard shows `skipped`: no checkout, no credentials, no `init`, no plan. ⚠️ **What it did not prove:** it refused on the **ref** check, since a probe branch is by definition not the default branch, so the **allow-list** refusal is still shell-tested rather than observed live. A `uses:` job cannot be `continue-on-error`, so an in-repo "expect this to fail" job would just be a red check.
 
-### Fixed
+- `tf-module-ci.yml` now runs **`terraform test`** when the module ships `*.tftest.hcl` files, and **fails the job** when they fail. Auto-detected (`find . -maxdepth 2 -name '*.tftest.hcl'`), which covers both the module root and the default `tests/` directory — no new input, because the presence of the files is the opt-in. A module with no tests **skips** the step and is unaffected; the PR comment renders that as `⏭️ no *.tftest.hcl` rather than as a pass or a fail.
 
+  **Why:** `tf-aws-ecr#3` shipped 1,239 lines of trust-policy test — a 491-line native suite, two golden policy documents, and a mutation harness whose weakenings `terraform test` catches *even when the golden is regenerated to agree* — and **this workflow ran none of it.** The PR went green on `fmt`/TFLint/Checkov/`validate` alone, so a later commit could have reverted the trust policy to its wide-open form unnoticed.
+
+  **It also closes a second gap that was easy to miss:** a variable `validation` block fires at **plan** time with real values, not at `terraform validate`, so a module's own input guards were never exercised either. `terraform test` is the only step in this workflow that reaches either one.
+
+  ⚠️ **Tests must mock their providers.** This job holds no AWS credentials by design, so a `run` block that reaches a real provider will fail — correctly, because it needs `mock_provider`, not secrets.
+
+- README now documents `tf-module-ci.yml`, which shipped in `v0.10.0` and was never added to the Workflows section or the Inputs table.
+
+### Fixed
 - README now says that **`app_id` became an input rather than a secret in `v0.9.0`**. The Secrets table and the usage examples describe the `v0.8.1` contract they pin, which reads as current — a caller on `v0.10.1` following the Secrets table would pass an undeclared secret and fail. The examples' pins are untouched here; this only states which contract they show.
+
+### Known gaps, not changed here
+- **TFLint findings do not fail the build.** `tflint` runs with `continue-on-error: true` and, unlike `fmt` and `validate`, has no corresponding `Fail if …` step — so its result is reported in the PR comment and otherwise advisory. Checkov is explicitly `soft_fail: true`. Deliberately left alone: making either blocking is a behaviour change across every `tf-aws-*` consumer and belongs in its own decision, not in a release that adds a different gate.
 
 ---
 
