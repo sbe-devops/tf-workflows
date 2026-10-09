@@ -362,7 +362,11 @@ assert_step_block() {
 # rather than containment.
 assert_step_list() {
   local expected="$1" got
-  got="$(grep -E '^      - (name|uses): ' "$workflow" | sed -e 's/^      - //')"
+  # 🔴 EVERY step line, not just `name:`/`uses:` ones (PROOF r1 on #9). A YAML
+  # step needs neither key: `- run: terraform apply …` with `if: always()`
+  # underneath is a valid, nameless step that the narrower regex could not see,
+  # so the list pin had a hole of exactly the kind it exists to close.
+  got="$(grep -E '^      - ' "$workflow" | sed -e 's/^      - //')"
   if [ "$got" = "$expected" ]; then
     printf '✅ pinned   the destroy job runs exactly these steps, in this order\n'
     pass=$((pass + 1))
