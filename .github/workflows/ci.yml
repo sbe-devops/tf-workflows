@@ -1,0 +1,46 @@
+name: CI
+
+# This repo publishes reusable workflows and, until now, ran no CI of its own: a change to
+# `tf-plan.yml` or `tf-apply.yml` was reviewed by eye and released. The destroy guard is
+# the first logic here that MUST hold, so it is the first thing gated.
+#
+# ⚠️ The two test scripts are deliberately dependency-free — bash, awk, sed, diff, perl.
+# A guard whose test needs a toolchain is a guard that stops being tested the first time
+# the toolchain breaks.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  destroy-guard:
+    name: destroy guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # Arm 1 — the guard's own bytes, extracted from tf-destroy.yml and run against 35
+      # candidate/allow-list pairs, plus the 11 wiring and ordering assertions the bytes
+      # cannot see.
+      - name: tests/destroy-guard.sh
+        run: tests/destroy-guard.sh
+
+      # T1's guard: the allow-list is keyed on a directory, but state is keyed on
+      # (directory × workspace). Its only input is `terraform workspace list`, so a stub
+      # terraform on PATH reproduces every layout — no state, no credentials.
+      - name: tests/workspace-guard.sh
+        run: tests/workspace-guard.sh
+
+      # Arm 2 — do arms 1 and 3 actually CATCH a weakened guard? 19 mutations, each
+      # required to turn one of them red. This is the step that keeps "tests pass" from
+      # meaning "tests exist".
+      - name: tests/mutate-destroy-guard.sh
+        run: tests/mutate-destroy-guard.sh
+
+      - name: Shellcheck the test scripts
+        run: shellcheck tests/*.sh

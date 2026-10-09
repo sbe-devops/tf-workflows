@@ -1,0 +1,334 @@
+name: Terraform Destroy
+
+# ADR-0045 Amendment 1 defines the lower-environment deliverable as change + teardown +
+# stand-up, all through CI. Teardown by hand is the gap this closes: `tf-workflows` had a
+# plan path and an apply path and no destroy path, so every teardown was a laptop running
+# `terraform destroy` against a real state file.
+#
+# 🔴 THE CONTROL IS AN ALLOW-LIST, AND IT IS THE CALLER'S. `destroyable_directories` is a
+# required input, listed in the caller's own PR-gated workflow file, and only an EXACT
+# match is destroyable. Nothing else is reachable — not by a typo, not by a `workflow_dispatch`
+# input, not by a glob. A denylist would have the opposite property: everything is
+# destroyable until someone remembers to add it.
+#
+# ⚠️ THE GUARD RUNS FIRST, BEFORE `actions/checkout` AND BEFORE ANY AWS CREDENTIAL EXISTS.
+# A refused run never holds a credential, which is also why the refusal is cheap to test.
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: "Path to the Terraform root module to DESTROY (relative to the repo root). Must appear verbatim in destroyable_directories."
+        required: true
+        type: string
+      destroyable_directories:
+        description: "Newline-separated allow-list of root modules this caller may destroy. EXACT paths only — globs are rejected, not expanded. Anything absent is refused."
+        required: true
+        type: string
+      aws_region:
+        description: "AWS region"
+        required: false
+        type: string
+        default: "us-east-1"
+      role_arn:
+        description: "IAM role ARN to assume (enforcer role)"
+        required: true
+        type: string
+      terraform_version:
+        description: "Terraform version"
+        required: false
+        type: string
+        default: "latest"
+      environment:
+        description: "GitHub Environment to run the destroy job in, for a required-reviewer gate. Declared HERE because a `uses:` job cannot carry `environment:` — see the README. Empty means no environment and therefore NO reviewer gate."
+        required: false
+        type: string
+        default: ""
+      app_id:
+        description: "GitHub App ID for reading private sbe-devops Terraform module repos. Pass via 'with:' using vars.SBE_DEVOPS_APP_ID."
+        required: false
+        type: string
+        default: ""
+    secrets:
+      app_private_key:
+        description: "GitHub App private key for reading private sbe-devops Terraform module repos."
+        required: false
+
+# Terraform must never wait on stdin in CI. A stack with an undefaulted variable and no
+# CI-side value otherwise drops into interactive mode and reads a stdin that will never
+# answer — for the FULL job timeout. Fitbooks INFRA lost an evening to exactly this on
+# `Plan accounts (mgmt)`: three separate 30-minute hangs, the job's stdout showing the
+# variable's own description text mid-prompt.
+#
+# A destroy needs this at least as much as an apply: `terraform plan -destroy` still
+# evaluates every variable in the root module, so a missing one hangs the teardown.
+env:
+  TF_INPUT: "0"
+
+jobs:
+  destroy:
+    name: Destroy
+    runs-on: ubuntu-latest
+    # 🔴 THE REVIEWER GATE LIVES HERE, NOT IN THE CALLER. `jobs.<id>.environment`
+    # is not a valid key on a job that is a `uses:` reusable-workflow call, so the
+    # README's original example — `environment: teardown` next to `uses:` — was
+    # invalid YAML for Actions and actionlint says so (PROOF r2). A caller cannot
+    # add a gate to this workflow from outside; it has to be an input.
+    #
+    # ⚠️ EMPTY MEANS NO GATE, AND THAT WAS MEASURED, NOT ASSUMED. A throwaway
+    # branch called this workflow with no `environment` input (run 37977151072,
+    # since deleted): `Set up job` succeeded and the first step ran, so an empty
+    # environment expression resolves to NO environment rather than failing the
+    # job or matching one by accident. ⇒ A caller that forgets the input gets a
+    # destroy with no reviewer, which is why the README says to set it.
+    environment: ${{ inputs.environment }}
+    # Hang protection — a destroy of EKS/RDS genuinely runs long, and a timeout that fires
+    # mid-destroy leaves both a partial teardown and a held state lock. Sized generously on
+    # purpose; without this a stuck job runs to GitHub's 360-minute default.
+    timeout-minutes: 60
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      APP_ID: ${{ inputs.app_id }}
+
+    steps:
+      # ──────────────────────────────────────────────────────────────────────────────────
+      # 🔑 tests/destroy-guard.sh EXTRACTS THE LINES BETWEEN THE TWO MARKERS AND RUNS THESE
+      # EXACT BYTES. There is no second copy of this logic to drift from, and the extractor
+      # fails closed: if the markers move, the test errors instead of passing.
+      #
+      # ⚠️ EVERY GitHub context stays in `env:` BELOW — never inside the body. The moment
+      # the body contains `${{ … }}` the extracted bytes stop being runnable, so the test
+      # asserts their absence and fails the build if one appears.
+      # ──────────────────────────────────────────────────────────────────────────────────
+      - name: Refuse a working_directory that is not on the caller's allow-list
+        env:
+          CANDIDATE: ${{ inputs.working_directory }}
+          ALLOW_LIST: ${{ inputs.destroyable_directories }}
+          CALLER_REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          # >>> GUARD BEGIN
+          set -euo pipefail
+
+          # Normalise exactly one way, and the same way on both sides of the comparison:
+          # trim surrounding whitespace and stray CR, strip leading "./", strip trailing "/".
+          # Anything beyond that is NOT normalised — no symlink resolution, no case folding,
+          # no glob expansion — because every one of those turns "exact match" into a
+          # judgement call about paths that do not exist yet.
+          norm() {
+            local p
+            p="$(printf '%s' "$1" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            while [ "${p#./}" != "$p" ]; do p="${p#./}"; done
+            while [ "$p" != "/" ] && [ "${p%/}" != "$p" ]; do p="${p%/}"; done
+            printf '%s' "$p"
+          }
+
+          refuse() {
+            echo "::error title=Destroy refused::$1"
+            exit 1
+          }
+
+          # 🔴 THE ALLOW-LIST IS ONLY A CONTROL IF IT CAME FROM A REVIEWED FILE.
+          # `workflow_dispatch` runs the workflow at ANY ref the dispatcher picks,
+          # and the allow-list is read from the caller's file AT THAT REF — so a
+          # branch adding `tf/aws-bootstrap` to it needs no review at all, just a
+          # push and a dispatch (PROOF r2). Anything other than the default
+          # branch is refused.
+          #
+          # ⚠️ Fail closed if we cannot establish the default branch rather than
+          # assuming "main": a repo whose default branch is `master` or `trunk`
+          # would otherwise be refused always (annoying) or allowed always
+          # (dangerous), depending on which way the guess went.
+          if [ -z "${DEFAULT_BRANCH:-}" ]; then
+            refuse "cannot determine this repository's default branch from the event payload, so the ref this allow-list was read from cannot be verified."
+          fi
+          if [ "${CALLER_REF:-}" != "refs/heads/${DEFAULT_BRANCH}" ]; then
+            refuse "this workflow was called at \"${CALLER_REF:-<unset>}\", not at refs/heads/${DEFAULT_BRANCH}. The destroy allow-list is read from the caller's file at the running ref, so it is only a control on the default branch — where changing it needs a reviewed PR."
+          fi
+
+          candidate="$(norm "${CANDIDATE:-}")"
+
+          [ -n "$candidate" ] || refuse "working_directory is empty. A destroy with no explicit target is refused."
+
+          # A path that cannot be compared is refused, not normalised into something
+          # comparable: "tf/aws-vpc/../aws-bootstrap" is an allow-list bypass by
+          # construction, and resolving it here would mean this guard decides what a path
+          # means instead of the caller.
+          case "$candidate" in
+            /*)      refuse "working_directory \"$candidate\" is absolute. Paths are relative to the repository root." ;;
+            *..*)    refuse "working_directory \"$candidate\" contains \"..\". A traversal cannot be matched against an allow-list." ;;
+            *[*?[]*) refuse "working_directory \"$candidate\" contains a glob character. The destroy target is one exact directory." ;;
+          esac
+
+          # 🔴 FAIL CLOSED. An empty or whitespace-only allow-list makes NOTHING
+          # destroyable. The input is `required: true`, so this is the second line of the
+          # same defence, and it is the one that holds when a caller passes an empty var.
+          if [ -z "$(printf '%s' "${ALLOW_LIST:-}" | tr -d '[:space:]')" ]; then
+            refuse "destroyable_directories is empty, so nothing is destroyable. Add the exact path to the caller's allow-list input."
+          fi
+
+          # The whole list is validated even after a match is found: a bad entry is a
+          # defect in the caller's control surface and must be reported on the run that
+          # introduced it, not on some later run that happens to target it.
+          matched=""
+          while IFS= read -r raw || [ -n "$raw" ]; do
+            entry="$(norm "$raw")"
+            [ -n "$entry" ] || continue
+            case "$entry" in
+              # 🔑 A GLOB IS A HARD ERROR, NOT A QUIET NON-MATCH. Exact matching would
+              # already refuse "tf/*", but silently — and a caller who believes patterns
+              # work will "fix" it by widening something else. Say it plainly instead.
+              *[*?[]*) refuse "allow-list entry \"$entry\" contains a glob character. Globs are NOT supported — list every destroyable directory exactly, because a pattern silently widens what can be destroyed." ;;
+              /*)      refuse "allow-list entry \"$entry\" is absolute. Use a path relative to the repository root." ;;
+              *..*)    refuse "allow-list entry \"$entry\" contains \"..\"." ;;
+            esac
+            if [ "$entry" = "$candidate" ]; then
+              matched="$entry"
+            fi
+          done <<ALLOWLIST
+          ${ALLOW_LIST:-}
+          ALLOWLIST
+
+          if [ -z "$matched" ]; then
+            allowed="$(printf '%s' "${ALLOW_LIST:-}" | tr '\n' ' ')"
+            refuse "\"$candidate\" is not on this caller's destroy allow-list. Allowed: $allowed"
+          fi
+
+          echo "Destroy allowed: \"$candidate\" matched the caller's allow-list exactly."
+          # <<< GUARD END
+
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      # No `fmt -check` here, unlike tf-apply.yml. Formatting is a gate on what you are
+      # about to CREATE; blocking a teardown on cosmetics strands live resources that
+      # nobody can remove without editing the stack first.
+
+      - name: Generate token for private modules
+        id: module-token
+        if: env.APP_ID != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ inputs.app_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: sbe-devops
+
+      - name: Configure git credentials for private modules
+        if: steps.module-token.conclusion == 'success'
+        run: |
+          git config --global url."https://oauth2:${{ steps.module-token.outputs.token }}@github.com".insteadOf "https://github.com"
+
+      - name: Terraform Init
+        run: terraform init -input=false -upgrade
+        working-directory: ${{ inputs.working_directory }}
+
+      # ──────────────────────────────────────────────────────────────────────────────────
+      # 🔴 T1 (INFRA): THE ALLOW-LIST IS KEYED ON A DIRECTORY; STATE IS KEYED ON
+      # (DIRECTORY × WORKSPACE). For a workspace-per-environment caller, ONE
+      # allow-list entry therefore authorises EVERY environment in that
+      # directory — and a fresh `init` selects `default`, so the run would
+      # destroy whatever happens to live in `default` while the operator was
+      # thinking of `staging`.
+      #
+      # ⚠️ This guard cannot sit with the first one: `workspace list` reads the
+      # BACKEND, so it needs credentials and an `init`. Everything that can be
+      # checked before a credential exists already has been.
+      #
+      # It refuses rather than selecting: picking a workspace from a
+      # directory-keyed allow-list is a guess, and the allow-list would have to
+      # grow a workspace dimension before this could be anything else.
+      # tests/workspace-guard.sh runs these bytes against a stubbed `terraform`.
+      # ──────────────────────────────────────────────────────────────────────────────────
+      - name: Refuse a workspace layout the allow-list cannot describe
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          # >>> WORKSPACE GUARD BEGIN
+          set -euo pipefail
+
+          refuse() {
+            echo "::error title=Destroy refused::$1"
+            exit 1
+          }
+
+          if ! raw="$(terraform workspace list 2>&1)"; then
+            refuse "could not list Terraform workspaces, so the destroy target cannot be established: $raw"
+          fi
+
+          # `terraform workspace list` prints one per line, the selected one
+          # prefixed with "* ". Blank lines are normal.
+          selected=""
+          names=""
+          count=0
+          while IFS= read -r line || [ -n "$line" ]; do
+            trimmed="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            [ -n "$trimmed" ] || continue
+            case "$trimmed" in
+              '*'*)
+                # The selected workspace, e.g. "* staging".
+                name="$(printf '%s' "${trimmed#\*}" | sed -e 's/^[[:space:]]*//')"
+                selected="$name"
+                ;;
+              *)
+                name="$trimmed"
+                ;;
+            esac
+            [ -n "$name" ] || continue
+            names="$names $name"
+            count=$((count + 1))
+          done <<WORKSPACES
+          $raw
+          WORKSPACES
+
+          if [ "$count" -eq 0 ]; then
+            refuse "Terraform reported no workspaces at all, which is not a state this guard can reason about."
+          fi
+          if [ "$count" -ne 1 ] || [ "$(printf '%s' "$names" | tr -d ' ')" != "default" ]; then
+            refuse "this stack has more than the default workspace ($(printf '%s' "$names" | sed 's/^ //')). The destroy allow-list authorises a DIRECTORY, and a directory does not identify which workspace's state would be destroyed — so the target is ambiguous and the run is refused rather than guessed. Give the stack one directory per environment, or extend the allow-list to name workspaces."
+          fi
+          if [ -n "$selected" ] && [ "$selected" != "default" ]; then
+            refuse "the selected workspace is \"$selected\", not \"default\"."
+          fi
+          if [ -n "${TF_WORKSPACE:-}" ] && [ "$TF_WORKSPACE" != "default" ]; then
+            refuse "TF_WORKSPACE is set to \"$TF_WORKSPACE\", which would move the target away from the one the allow-list authorised."
+          fi
+
+          echo "Workspace layout is single-default; the directory identifies the state."
+          # <<< WORKSPACE GUARD END
+
+      # PLAN THE DESTROY, THEN APPLY THAT PLAN — never `destroy -auto-approve`. The saved
+      # plan is what gets applied, so what the artifact records is what actually ran; a
+      # second evaluation could legitimately differ from the one a human read.
+      - name: Terraform Plan (destroy)
+        run: terraform plan -destroy -input=false -no-color -out=destroy.tfplan
+        working-directory: ${{ inputs.working_directory }}
+
+      # The binary plan is the evidence; the rendered text is the part a person can read in
+      # six months when asked what the teardown removed.
+      - name: Render the destroy plan
+        run: terraform show -no-color destroy.tfplan > destroy-plan.txt
+        working-directory: ${{ inputs.working_directory }}
+
+      - name: Upload the destroy plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: destroy-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ inputs.working_directory }}/destroy.tfplan
+            ${{ inputs.working_directory }}/destroy-plan.txt
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Terraform Apply (the saved destroy plan)
+        run: terraform apply -input=false destroy.tfplan
+        working-directory: ${{ inputs.working_directory }}
