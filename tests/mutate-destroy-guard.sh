@@ -35,7 +35,7 @@ survivors=()
 # completely healthy. A mutation that silently never runs is the same class of
 # failure as a sed that changes nothing, and the harness could not see it.
 # Keep this in step with the mutate/mutate_prog calls below.
-EXPECTED_MUTATIONS=24
+EXPECTED_MUTATIONS=26
 
 tmproot="$(mktemp -d)"
 trap 'rm -rf "$tmproot"' EXIT
@@ -211,6 +211,16 @@ mutate_prog "M23 · if: always() on the APPLY step" \
 mutate_prog "M24 · the plan command swallows its own exit code" \
   "|| true makes the step succeed on a refused plan, so prevent_destroy stops the plan and nothing stops the apply" \
   perl -0pi -e 's/(run: terraform plan -destroy -input=false -no-color -out=destroy\.tfplan)/$1 || true/'
+
+# PROOF r3: both of these are actionlint-valid and PyYAML puts the key ON the
+# step, so an extractor that stops at a blank or a comment never sees them.
+mutate_prog "M25 · a BLANK line, then continue-on-error on the plan step" \
+  'YAML does not end a step at a blank line, and the first extractor did' \
+  perl -0pi -e 's/(        working-directory: \$\{\{ inputs\.working_directory \}\}\n)(\n      # The binary plan)/$1\n        continue-on-error: true\n$2/'
+
+mutate_prog "M26 · a step-indented COMMENT, then if: always() on the apply step" \
+  'a comment does not end a step either' \
+  perl -0pi -e 's/( +)- name: Terraform Apply \(the saved destroy plan\)\n/$1- name: Terraform Apply (the saved destroy plan)\n$1  # keep going even if the plan refused\n$1  if: always()\n/'
 
 mutate_prog "M14 · checkout is hoisted above the guard" \
   "a refused run must never reach a checkout or a credential" \

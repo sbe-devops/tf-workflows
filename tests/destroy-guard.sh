@@ -326,10 +326,22 @@ assert_step_block() {
   # The step's own lines: from its `- name:` up to the next step, comment or
   # blank line at step indentation. Trailing whitespace is stripped so the
   # comparison is about content, not editors.
+  # 🔴 THE EXTRACTOR ENDS WHERE *YAML* ENDS THE STEP, not at the first blank or
+  # comment. PROOF r3 broke the first version two ways, both actionlint-valid
+  # and both parsed by PyYAML as keys ON the step:
+  #   · a BLANK line, then `continue-on-error: true`  (plan)
+  #   · a step-indented `# …`, then `if: always()`    (apply)
+  # Stopping early meant the pin compared the first three lines and shrugged at
+  # whatever followed. So: blanks and comments are SKIPPED and collection
+  # continues; the block ends only at the next step or at a dedent.
   got="$(printf '%s' "$expected" | head -1 | { read -r first; awk -v first="$first" '
-    index($0, first) { inblock = 1; print; next }
-    inblock && (/^      - name: / || /^      #/ || /^[[:space:]]*$/) { exit }
-    inblock { print }
+    index($0, first)   { inblock = 1; print; next }
+    !inblock           { next }
+    /^      - name: /  { exit }            # the next step
+    /^[[:space:]]*$/   { next }            # blank: skip, keep looking
+    /^[[:space:]]*#/   { next }            # comment: skip, keep looking
+    /^        [^ ]/    { print; next }     # a key of THIS step (8 spaces)
+    { exit }                               # dedent: the steps list is over
   ' "$workflow"; })"
   if [ "$got" = "$expected" ]; then
     printf '✅ pinned   %s is exactly the expected block\n' "$label"
