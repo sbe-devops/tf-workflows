@@ -348,7 +348,7 @@ jobs:
     with:
       working_directory: terraform/prod
       role_arn: arn:aws:iam::123456789012:role/your-project-terraform-enforcer
-      environment: prod-apply        # ← the job runs HERE, so the token carries it
+      environment: prod              # ← the job runs HERE, so the token carries it (A4.1a: <env>, Eric-gated)
 ```
 
 ⚠️ **The name is one string that has to be identical in two repositories** — this input, and `destroy_environment` / the enforcer trust in the consumer's `tf-aws-github-oidc` stack. A mismatch, or omitting this input, produces **`Not authorized to perform sts:AssumeRoleWithWebIdentity`** — the *same* message as "not opted in" and "wrong branch". So each of these workflows **echoes the Environment it is actually running in, before the credential step**, and warns loudly when there is none. The echo is what makes those causes tellable apart.

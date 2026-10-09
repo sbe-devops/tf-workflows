@@ -29,6 +29,14 @@ killed=0
 survived=0
 survivors=()
 
+# 🔴 DECLARED COUNT. M22's call once contained `${{` inside a double-quoted
+# string, which bash reads as a bad substitution — so the call never executed,
+# nothing printed, and the run reported "23 killed, 0 survived" while LOOKING
+# completely healthy. A mutation that silently never runs is the same class of
+# failure as a sed that changes nothing, and the harness could not see it.
+# Keep this in step with the mutate/mutate_prog calls below.
+EXPECTED_MUTATIONS=24
+
 tmproot="$(mktemp -d)"
 trap 'rm -rf "$tmproot"' EXIT
 
@@ -189,12 +197,34 @@ mutate_prog "M21 · the destroy APPLY step becomes continue-on-error" \
   "a destroy that fails must fail the job" \
   perl -0pi -e 's/( +)- name: Terraform Apply \(the saved destroy plan\)\n/$1- name: Terraform Apply (the saved destroy plan)\n$1  continue-on-error: true\n/'
 
+# PROOF's three survivors of my first (grep-based) version of the hard-step
+# assertion. Each is a different way to soften a step without writing the
+# string `continue-on-error: true`.
+mutate_prog "M22 · continue-on-error in EXPRESSION form on the plan step" \
+  'a denylist of spellings is not a control; the expression form is the same softening' \
+  perl -0pi -e 's/( +)- name: Terraform Plan \(destroy\)\n/$1- name: Terraform Plan (destroy)\n$1  continue-on-error: \$\{\{ true \}\}\n/'
+
+mutate_prog "M23 · if: always() on the APPLY step" \
+  "the apply would run even though the plan failed, against a plan file written by that failed plan" \
+  perl -0pi -e 's/( +)- name: Terraform Apply \(the saved destroy plan\)\n/$1- name: Terraform Apply (the saved destroy plan)\n$1  if: always()\n/'
+
+mutate_prog "M24 · the plan command swallows its own exit code" \
+  "|| true makes the step succeed on a refused plan, so prevent_destroy stops the plan and nothing stops the apply" \
+  perl -0pi -e 's/(run: terraform plan -destroy -input=false -no-color -out=destroy\.tfplan)/$1 || true/'
+
 mutate_prog "M14 · checkout is hoisted above the guard" \
   "a refused run must never reach a checkout or a credential" \
   perl -0pi -e 's/^ {6}- uses: actions\/checkout\@v4\n//m; s/^( {4}steps:\n)/$1      - uses: actions\/checkout\@v4\n/m'
 
 echo "══ result ══════════════════════════════════════════════════════════════════════════"
 printf '%s killed, %s survived\n' "$killed" "$survived"
+
+ran=$((killed + survived))
+if [ "$ran" -ne "$EXPECTED_MUTATIONS" ]; then
+  printf '🔴 %s mutations ran, %s declared — one never executed, so this sweep proves less than it claims.\n' \
+    "$ran" "$EXPECTED_MUTATIONS"
+  exit 1
+fi
 if [ "$survived" -ne 0 ]; then
   printf 'SURVIVORS (each one is a gap in tests/destroy-guard.sh):\n'
   printf '  - %s\n' "${survivors[@]}"
