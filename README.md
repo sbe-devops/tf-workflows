@@ -195,7 +195,24 @@ jobs:
 
 ⚠️ **The name is one string that has to be identical in two repositories** — this input, and `destroy_environment` / the enforcer trust in the consumer's `tf-aws-github-oidc` stack. A mismatch, or omitting this input, produces **`Not authorized to perform sts:AssumeRoleWithWebIdentity`** — the *same* message as "not opted in", "wrong branch" and "Environment does not exist". So each of these workflows **echoes the Environment it is actually running in, before the credential step**, and warns loudly when there is none. Fail-closed either way; the echo is what makes it diagnosable.
 
-🔴 **A consequence worth deciding deliberately, not discovering:** `tf-plan.yml` runs on `pull_request`. If the Environment it names carries **required reviewers**, then **every PR plan waits for a human approval**. That is a real workflow cost for a read-only planner role, and it is a policy question rather than a workflow one — raised on the board for ORCA/Eric. A GitHub Environment can exist *without* protection rules and still make the claim appear, so the structural check can be satisfied without gating every PR.
+### 🔑 Two Environments per environment — the pair A4.1a rules
+
+`tf-plan.yml` runs on `pull_request`. If the Environment it names carried **required reviewers**, **every PR plan would wait on a human** — for a *read-only* planner role. So **ADR-0046 A4.1a** rules a pair, and a consumer needs both:
+
+| workflow | Environment | protection rules | why |
+|---|---|---|---|
+| `tf-plan.yml` | **`<env>-plan`** | 🔴 **none** | the claim has to exist for A4.2's check to pass, and a PR plan must not block on a human |
+| `tf-apply.yml` · `tf-destroy.yml` | **`<env>`** | ✅ **Eric-gated** (required reviewers) | anything that mutates stops for a person |
+
+**Both are pinned in IAM** — the planner role pins `<env>-plan`, the enforcer pins `<env>`. ⇒ *An Environment with no protection rules still produces the `environment` claim, so the structural check is satisfied without gating pull requests.* 🔑 **The pair is the point: it is the plan/apply split expressed as two Environments, so "may I look" and "may I change it" stop being the same approval.**
+
+```yaml
+# PR plans — no reviewers on tst-plan, so they just run
+with: { environment: tst-plan, role_arn: …terraform-planner }
+
+# merges and dispatches — tst has required reviewers
+with: { environment: tst,      role_arn: …terraform-enforcer }
+```
 
 ---
 

@@ -8,6 +8,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This re
 
 ## [Unreleased]
 
+### Fixed
+
+- 🔴 **The stated reason for `terraform init -upgrade` in `tf-plan.yml`/`tf-apply.yml` is wrong, and the flag is worse than unnecessary.** `v0.8.1` justified it as making *"pinned module sources always re-fetched from the declared `?ref=` tag rather than the runner cache."* **There is no runner cache to defeat:** no workflow here has an `actions/cache` step (verified across all five), every job is `ubuntu-latest`, and each run starts from a fresh checkout with no `.terraform/` directory — so plain `init` already fetches modules fresh. *Found by INFRA (T3); confirmed independently here.*
+
+  ⚠️ **And measuring it turned up the real problem, which points the other way.** With a committed `.terraform.lock.hcl` pinning `hashicorp/aws 5.0.0` under a `>= 5.0.0` constraint:
+
+  ```
+  terraform init           → "Reusing previous version … from the dependency lock file"   → 5.0.0
+  terraform init -upgrade  → "Installing hashicorp/aws v6.68.0"                           → 6.68.0, lock REWRITTEN
+  ```
+
+  ⇒ **`-upgrade` ignores and overwrites the committed lock file — across a MAJOR version.** `tf/aws-ecr` ships a lock file today, and plan and apply are **separate runs**, so the provider version a human reviewed in the plan is not guaranteed to be the one the apply uses. **That is a reproducibility hole in an apply pipeline, not a cache optimisation.**
+
+  **This release corrects the rationale only.** Removing the flag is a behaviour change for every consumer and gets its own PR, release note and review — with the measurement above as the argument, and INFRA's `init` + `terraform get -update` split as the shape if a cache step is ever added. **`-upgrade` must not come back while any consumer commits a lock file.**
+
 ### Added
 
 - **`tf-plan.yml` and `tf-apply.yml` accept an `environment` input**, and both report the Environment they are running in before assuming a role. `tf-destroy.yml` got the same input in #6.
