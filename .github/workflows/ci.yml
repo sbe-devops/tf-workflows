@@ -1,0 +1,33 @@
+name: CI
+
+# ⚠️ CONFLICT EXPECTED WITH `tf-workflows#6` AND `#7`, which also add this file.
+# The resolution is a UNION of the steps — three PRs, three test scripts, one job.
+# They do not overlap in content, only in filename. Whichever merges later does
+# the merge; a conflicting PR gets NO `pull_request` runs at all (GitHub cannot
+# build the merge ref), so resolve it rather than leaving it to sit green-looking.
+#
+# Dependency-free on purpose — bash, awk, sed, grep.
+
+on:
+  # No `branches:` filter: it matches the PR's BASE, so filtering on main means a
+  # stacked PR runs no checks and looks green by having nothing to be red.
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  environment-input:
+    name: environment input wiring
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: tests/environment-input.sh
+        run: tests/environment-input.sh
+
+      - name: Shellcheck the test scripts
+        run: shellcheck tests/*.sh

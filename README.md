@@ -165,9 +165,37 @@ jobs:
 | `tf-apply.yml` | `role_arn` | `string` | yes | — | IAM role ARN to assume — must be the enforcer role |
 | `tf-apply.yml` | `aws_region` | `string` | no | `us-east-1` | AWS region passed to `aws-actions/configure-aws-credentials` |
 | `tf-apply.yml` | `terraform_version` | `string` | no | `latest` | Terraform version for `hashicorp/setup-terraform` |
+| `tf-plan.yml` | `environment` | `string` | no | `""` | GitHub Environment to run the job in. **Required to satisfy ADR-0046 Amendment 4** — see below. Empty means no environment and no `environment` claim |
+| `tf-apply.yml` | `environment` | `string` | no | `""` | GitHub Environment to run the job in. **Required to satisfy ADR-0046 Amendment 4** — see below. Empty means no environment and no `environment` claim |
 | `tf-module-ci.yml` | `working_directory` | `string` | yes | — | Path to the module (relative to the repo root) |
 | `tf-module-ci.yml` | `terraform_version` | `string` | no | `latest` | Terraform version for `hashicorp/setup-terraform` |
 | `tf-module-ci.yml` | `tflint_version` | `string` | no | `latest` | TFLint version for `terraform-linters/setup-tflint` |
+
+---
+
+## The `environment` input, and why every workflow here has one
+
+**ADR-0046 Amendment 4 makes one live check the gate:** every GitHub-OIDC role in an **upper** account must carry a `StringEquals` on the `environment` claim, pinned to a named GitHub Environment. A token only carries that claim when **its job runs in an Environment**.
+
+> ### 🔴 **AND A CALLER CANNOT PUT A REUSABLE WORKFLOW'S JOB IN ONE.** `jobs.<id>.environment` is not a valid key on a job that is a `uses:` call.
+> ⇒ *Without an input on this side, **no caller can satisfy Amendment 4 at all**.* That is the whole reason these inputs exist; they are not a convenience.
+
+```yaml
+jobs:
+  apply-prod:
+    permissions:
+      id-token: write
+      contents: read
+    uses: sbe-devops/tf-workflows/.github/workflows/tf-apply.yml@v0.11.0
+    with:
+      working_directory: terraform/prod
+      role_arn: arn:aws:iam::123456789012:role/your-project-terraform-enforcer
+      environment: prod-apply        # ← the job runs HERE, so the token carries it
+```
+
+⚠️ **The name is one string that has to be identical in two repositories** — this input, and `destroy_environment` / the enforcer trust in the consumer's `tf-aws-github-oidc` stack. A mismatch, or omitting this input, produces **`Not authorized to perform sts:AssumeRoleWithWebIdentity`** — the *same* message as "not opted in", "wrong branch" and "Environment does not exist". So each of these workflows **echoes the Environment it is actually running in, before the credential step**, and warns loudly when there is none. Fail-closed either way; the echo is what makes it diagnosable.
+
+🔴 **A consequence worth deciding deliberately, not discovering:** `tf-plan.yml` runs on `pull_request`. If the Environment it names carries **required reviewers**, then **every PR plan waits for a human approval**. That is a real workflow cost for a read-only planner role, and it is a policy question rather than a workflow one — raised on the board for ORCA/Eric. A GitHub Environment can exist *without* protection rules and still make the claim appear, so the structural check can be satisfied without gating every PR.
 
 ---
 

@@ -10,6 +10,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This re
 
 ### Added
 
+- **`tf-plan.yml` and `tf-apply.yml` accept an `environment` input**, and both report the Environment they are running in before assuming a role. `tf-destroy.yml` got the same input in #6.
+
+  **Why:** ADR-0046 Amendment 4 makes one live check the gate — every GitHub-OIDC role in an upper account must pin the `environment` claim to a named GitHub Environment. A token carries that claim only when its **job** runs in one, and 🔴 **`jobs.<id>.environment` is not a valid key on a `uses:` reusable-workflow call**, so a caller cannot put these jobs in an Environment from outside. **Without these inputs, no caller can satisfy Amendment 4 at all.**
+
+  ⚠️ **The Environment name is one string duplicated across two repositories** — this input, and the enforcer trust in the consumer's `tf-aws-github-oidc` stack. Omitting it, or a typo, yields `Not authorized to perform sts:AssumeRoleWithWebIdentity` — **the same message as "not opted in", "wrong branch", and "Environment does not exist"**. So each job now echoes the resolved Environment *before* the credential step and emits a `::warning` when there is none. Fail-closed either way; this is what makes it diagnosable.
+
+  🔴 **Open question, flagged rather than decided:** `tf-plan.yml` runs on `pull_request`, so an Environment with **required reviewers** makes every PR plan wait on a human. An Environment can exist without protection rules and still produce the claim, so the structural check can be met without gating PRs — but which way a consumer should go is a policy call, not a workflow one.
+
 - `tf-module-ci.yml` now runs **`terraform test`** when the module ships `*.tftest.hcl` files, and **fails the job** when they fail. Auto-detected (`find . -maxdepth 2 -name '*.tftest.hcl'`), which covers both the module root and the default `tests/` directory — no new input, because the presence of the files is the opt-in. A module with no tests **skips** the step and is unaffected; the PR comment renders that as `⏭️ no *.tftest.hcl` rather than as a pass or a fail.
 
   **Why:** `tf-aws-ecr#3` shipped 1,239 lines of trust-policy test — a 491-line native suite, two golden policy documents, and a mutation harness whose weakenings `terraform test` catches *even when the golden is regenerated to agree* — and **this workflow ran none of it.** The PR went green on `fmt`/TFLint/Checkov/`validate` alone, so a later commit could have reverted the trust policy to its wide-open form unnoticed.

@@ -21,6 +21,11 @@ on:
         required: false
         type: string
         default: "latest"
+      environment:
+        description: "GitHub Environment to run this job in. Declared HERE because `environment:` is not a valid key on a job that is a `uses:` reusable-workflow call. Empty means no environment — and therefore no `environment` claim in the OIDC token."
+        required: false
+        type: string
+        default: ""
       app_id:
         description: "GitHub App ID for reading private sbe-devops Terraform module repos. Pass via 'with:' using vars.SBE_DEVOPS_APP_ID."
         required: false
@@ -52,6 +57,19 @@ jobs:
   apply:
     name: Apply
     runs-on: ubuntu-latest
+    # 🔴 THE ENVIRONMENT IS AN INPUT, NOT A CALLER JOB KEY, and ADR-0046
+    # Amendment 4 is why it has to exist at all: the live gate is that every
+    # upper-account GitHub-OIDC role carries a `StringEquals` on the
+    # `…:environment` claim. A token only carries that claim when its JOB runs in
+    # a GitHub Environment — and a caller CANNOT add `environment:` to a `uses:`
+    # job, so without this input no caller can satisfy A4.1 at all.
+    #
+    # ⚠️ EMPTY MEANS NO CLAIM, measured on tf-workflows run 37977151072: an empty
+    # environment expression resolves to no environment and the job runs. So
+    # against a role that pins the claim, omitting this input fails at
+    # `Configure AWS credentials` with AccessDenied — fail-closed, but the error
+    # names nothing. The step below echoes what the job actually got.
+    environment: ${{ inputs.environment }}
     # Hang protection — EKS/RDS creation genuinely runs long. Sized GENEROUSLY on purpose: a timeout that fires mid-apply leaves a partial apply AND a held state lock, which is worse than the hang.
     # Without this a stuck job runs to GitHub's 360-minute default.
     timeout-minutes: 60
@@ -63,6 +81,20 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # Cheap, and it is the difference between one AccessDenied and four
+      # indistinguishable causes (no opt-in · wrong branch · wrong Environment
+      # name · Environment absent). Runs BEFORE the credential step so the log
+      # shows what the token will carry.
+      - name: Report the GitHub Environment this job is running in
+        env:
+          GH_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          if [ -n "${GH_ENVIRONMENT:-}" ]; then
+            echo "GitHub Environment: \"$GH_ENVIRONMENT\" — the OIDC token will carry an environment claim with this value."
+          else
+            echo "::warning title=No GitHub Environment::This job is running with NO GitHub Environment, so its OIDC token carries no environment claim. If the role being assumed pins the environment claim (ADR-0046 Amendment 4), this run cannot assume it. Pass the environment input."
+          fi
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
