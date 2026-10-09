@@ -122,17 +122,31 @@ jobs:
       - name: Detect Terraform tests
         id: has_tests
         run: |
+          # >>> DETECT BEGIN
           set -euo pipefail
-          # `terraform test` discovers `./*.tftest.hcl` plus its test directory,
-          # which defaults to `tests/`. maxdepth 2 covers exactly those.
-          count="$(find . -maxdepth 2 -name '*.tftest.hcl' -type f | wc -l | tr -d '[:space:]')"
+
+          # 🔴 BOTH SYNTAXES, AT ANY DEPTH. This was `-maxdepth 2 -name
+          # '*.tftest.hcl'`, with a comment claiming that covered "exactly" what
+          # `terraform test` runs. Both halves were wrong (PROOF r2):
+          #
+          #   · `*.tftest.json` is an equally valid test file, so a JSON-only
+          #     suite was skipped and the job went GREEN on no tests at all.
+          #   · maxdepth 2 finds MORE than terraform runs, not less —
+          #     `examples/foo.tftest.hcl` is found, terraform ignores it, and the
+          #     run executed zero tests and still exited 0.
+          #
+          # So: a test file ANYWHERE means this module intends to have tests. If
+          # terraform then does not run them, the next step says so rather than
+          # this one quietly guessing which paths count.
+          count="$(find . \( -name '*.tftest.hcl' -o -name '*.tftest.json' \) -type f | wc -l | tr -d '[:space:]')"
           if [ "$count" -gt 0 ]; then
             echo "found=true" >> "$GITHUB_OUTPUT"
             echo "::notice::found $count terraform test file(s)"
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::no *.tftest.hcl found — skipping terraform test"
+            echo "::notice::no *.tftest.hcl or *.tftest.json found — skipping terraform test"
           fi
+          # <<< DETECT END
         working-directory: ${{ inputs.working_directory }}
 
       # ⚠️ TESTS MUST MOCK THEIR PROVIDERS. This job holds no AWS credentials, by
@@ -142,11 +156,58 @@ jobs:
       - name: Terraform Test
         id: tftest
         if: steps.has_tests.outputs.found == 'true'
-        run: terraform test -no-color
+        run: |
+          # pipefail, or `tee` would mask a failing `terraform test` and this
+          # step would report success on a red suite.
+          set -o pipefail
+          terraform test -no-color 2>&1 | tee "$RUNNER_TEMP/tftest.out"
         working-directory: ${{ inputs.working_directory }}
         # Soft here, hard below — matching fmt/validate, so the PR comment still
         # posts with every result before the job fails.
         continue-on-error: true
+
+      # 🔴 A SUITE THAT EXECUTES NOTHING IS NOT A PASSING SUITE (PROOF r2). If the
+      # test files sit where `terraform test` does not look, it prints
+      # "Success! 0 passed, 0 failed." and exits 0 — so the module reported a
+      # green test gate while running no tests. Same shape as the defect this
+      # whole step exists to fix: a check that structurally cannot fail.
+      - name: Assert the tests actually executed
+        id: tftest_runs
+        if: steps.has_tests.outputs.found == 'true'
+        env:
+          TFTEST_OUT: ${{ runner.temp }}/tftest.out
+        continue-on-error: true
+        run: |
+          # >>> RUNS GUARD BEGIN
+          set -uo pipefail
+
+          fail() {
+            echo "::error title=terraform test executed nothing::$1"
+            exit 1
+          }
+
+          [ -f "${TFTEST_OUT:-}" ] || fail "no terraform test output was captured at ${TFTEST_OUT:-<unset>}, so the number of runs cannot be established."
+
+          # Both outcomes print the same shape: "Success! 5 passed, 0 failed."
+          # and "Failure! 0 passed, 3 failed."
+          summary="$(grep -Eo '[0-9]+ passed, [0-9]+ failed' "$TFTEST_OUT" | tail -1)"
+          if [ -z "$summary" ]; then
+            fail "could not find a run summary in terraform's output. Not being able to tell how many tests ran is not evidence that any did."
+          fi
+
+          passed="${summary%% passed*}"
+          rest="${summary#* passed, }"
+          failed="${rest%% failed*}"
+          case "$passed$failed" in
+            ''|*[!0-9]*) fail "could not parse the run summary \"$summary\"." ;;
+          esac
+
+          if [ "$((passed + failed))" -eq 0 ]; then
+            fail "test files exist in this module but terraform executed ZERO runs ($summary). \`terraform test\` only discovers ./*.tftest.{hcl,json} and the test directory (default \`tests/\`) — a suite anywhere else is never run, and a green check on zero runs is worse than no check."
+          fi
+
+          echo "terraform executed $((passed + failed)) run(s): $summary"
+          # <<< RUNS GUARD END
 
       - name: Post Results to PR
         uses: actions/github-script@v7
@@ -163,9 +224,16 @@ jobs:
             // A skipped test step means the module ships no tests. Rendering
             // that as ❌ would read as a failure, and rendering it as ✅ would
             // read as coverage. It is neither.
+            const runs     = '${{ steps.tftest_runs.outcome }}';
+
+            // Three states, not two. A skipped step means the module ships no
+            // tests; a failed runs-assertion means it ships tests terraform did
+            // not run, which must never render as a pass.
             const testRow = tftest === 'skipped'
-              ? `| Test     | ⏭️ \`no *.tftest.hcl\` |`
-              : `| Test     | ${icon(tftest)} \`${tftest}\` |`;
+              ? `| Test     | ⏭️ \`no *.tftest.{hcl,json}\` |`
+              : runs === 'failure'
+                ? `| Test     | ❌ \`files found, zero runs executed\` |`
+                : `| Test     | ${icon(tftest)} \`${tftest}\` |`;
 
             const body = [
               `### Terraform Module CI — \`${{ inputs.working_directory }}\``,
@@ -201,4 +269,8 @@ jobs:
       # the job, or every module without tests breaks on the first consumer bump.
       - name: Fail if terraform test failed
         if: steps.tftest.outcome == 'failure'
+        run: exit 1
+
+      - name: Fail if the tests did not execute
+        if: steps.tftest_runs.outcome == 'failure'
         run: exit 1

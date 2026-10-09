@@ -1,16 +1,14 @@
 name: CI
 
-# ⚠️ CONFLICT EXPECTED WITH `tf-workflows#6` AND `#7`, which also add this file.
-# The resolution is a UNION of the steps — three PRs, three test scripts, one job.
-# They do not overlap in content, only in filename. Whichever merges later does
-# the merge; a conflicting PR gets NO `pull_request` runs at all (GitHub cannot
-# build the merge ref), so resolve it rather than leaving it to sit green-looking.
+# This repo publishes reusable workflows and, until now, ran no CI of its own: a change to
+# `tf-plan.yml` or `tf-apply.yml` was reviewed by eye and released. The destroy guard is
+# the first logic here that MUST hold, so it is the first thing gated.
 #
-# Dependency-free on purpose — bash, awk, sed, grep.
+# ⚠️ The two test scripts are deliberately dependency-free — bash, awk, sed, diff, perl.
+# A guard whose test needs a toolchain is a guard that stops being tested the first time
+# the toolchain breaks.
 
 on:
-  # No `branches:` filter: it matches the PR's BASE, so filtering on main means a
-  # stacked PR runs no checks and looks green by having nothing to be red.
   pull_request:
   push:
     branches: [main]
@@ -19,13 +17,43 @@ permissions:
   contents: read
 
 jobs:
-  environment-input:
-    name: environment input wiring
+  gates:
+    name: workflow test gates
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
+      # Arm 1 — the guard's own bytes, extracted from tf-destroy.yml and run against 35
+      # candidate/allow-list pairs, plus the 11 wiring and ordering assertions the bytes
+      # cannot see.
+      - name: tests/destroy-guard.sh
+        run: tests/destroy-guard.sh
+
+      # T1's guard: the allow-list is keyed on a directory, but state is keyed on
+      # (directory × workspace). Its only input is `terraform workspace list`, so a stub
+      # terraform on PATH reproduces every layout — no state, no credentials.
+      - name: tests/workspace-guard.sh
+        run: tests/workspace-guard.sh
+
+      # Arm 2 — do arms 1 and 3 actually CATCH a weakened guard? 19 mutations, each
+      # required to turn one of them red. This is the step that keeps "tests pass" from
+      # meaning "tests exist".
+      - name: tests/mutate-destroy-guard.sh
+        run: tests/mutate-destroy-guard.sh
+
+      # tf-module-ci.yml's two test gates (tf-workflows#7): test-file detection
+      # against real directory fixtures, and the zero-runs assertion against
+      # captured `terraform test` output.
+      - name: tests/module-ci-guard.sh
+        run: tests/module-ci-guard.sh
+
+      - name: tests/mutate-module-ci.sh
+        run: tests/mutate-module-ci.sh
+
+      # The environment-input wiring (tf-workflows#8): ADR-0046 A4.1 needs the
+      # job to run in a GitHub Environment, which is a property of the job's
+      # DEFINITION, so these are static assertions rather than a run.
       - name: tests/environment-input.sh
         run: tests/environment-input.sh
 
