@@ -8,6 +8,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This re
 
 ## [Unreleased]
 
+### Added
+
+- **`tf-destroy.yml`** — reusable teardown for a **lower** environment: plan the destroy to a file, upload both the binary plan and its `terraform show` rendering as a 90-day artifact, then apply **that saved plan**. Never a bare `terraform destroy -auto-approve`, so the artifact is what actually ran rather than a second evaluation of it.
+
+  **Why:** ADR-0045 Amendment 1 defines the lower-environment deliverable as change + teardown + stand-up, all through CI. This repo had a plan path and an apply path and **no destroy path**, so every teardown was a laptop holding enforcer credentials. Fitbooks adopts first.
+
+  🔴 **The control is a caller-owned allow-list, and it fails closed.** `destroyable_directories` is a **required** input listed in the caller's own PR-gated workflow file; only an **exact** path match is destroyable, and an empty list makes nothing destroyable. ⇒ `tf/aws-bootstrap` (state bucket + lock table) and `tf/aws-github-oidc` (every CI role) are unreachable unless someone adds them in a reviewed PR. **A denylist would be destroyable-by-default, which is why there isn't one.**
+
+  **The guard runs first — before `actions/checkout` and before any AWS credential exists**, so a refused run never holds a credential. A parent or child of a listed path, any `..`, any absolute path, and any glob are all refused. `..` is **refused rather than resolved**, because resolving it would make the guard, not the caller, the thing that decides what a path means. A glob in the allow-list is a **hard error naming globs** rather than a silent non-match: exact matching would refuse `tf/*` anyway, but a caller who believes patterns work will "fix" it by widening something else.
+
+  **No `fmt -check`**, unlike `tf-apply.yml`: formatting gates what you are about to create, and blocking a teardown on cosmetics strands live resources until someone edits the stack.
+
+- **`tests/` + `ci.yml` — this repo now runs CI on itself, for the first time.** `tests/destroy-guard.sh` **extracts the guard's own bytes out of `tf-destroy.yml` and executes them** (35 candidate/allow-list pairs), so there is no second copy of the logic to drift from. The extractor **fails closed** if the markers move, if the body shrinks, or if the guard grows a `${{ … }}` expression that would make the bytes un-runnable. 11 further assertions cover what the bytes cannot see: which input feeds which variable, that the guard precedes checkout/credentials/`init`, and that the apply applies the saved plan.
+
+  `tests/mutate-destroy-guard.sh` weakens the guard **14 ways and requires the suite to go red each time**, printing the diff it applied — a harness that is silent on success cannot be told apart from one that did nothing. **Mapping `ALLOW_LIST` to the wrong input passes all 35 logic cases and is caught only by the wiring assertions**, which is the clearest argument for keeping both halves.
+
+  ⚠️ **Not proven, stated plainly:** a reusable workflow cannot be run end-to-end from a test, and a `uses:` job cannot be `continue-on-error`, so **no in-repo job performs a live refusal**. The wiring is asserted statically; the first live exercise is the first real caller.
+
+### Fixed
+
+- README now says that **`app_id` became an input rather than a secret in `v0.9.0`**. The Secrets table and the usage examples describe the `v0.8.1` contract they pin, which reads as current — a caller on `v0.10.1` following the Secrets table would pass an undeclared secret and fail. The examples' pins are untouched here; this only states which contract they show.
+
 ---
 
 ## [v0.10.0] - 2026-07-20

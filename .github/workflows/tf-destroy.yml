@@ -1,0 +1,223 @@
+name: Terraform Destroy
+
+# ADR-0045 Amendment 1 defines the lower-environment deliverable as change + teardown +
+# stand-up, all through CI. Teardown by hand is the gap this closes: `tf-workflows` had a
+# plan path and an apply path and no destroy path, so every teardown was a laptop running
+# `terraform destroy` against a real state file.
+#
+# 🔴 THE CONTROL IS AN ALLOW-LIST, AND IT IS THE CALLER'S. `destroyable_directories` is a
+# required input, listed in the caller's own PR-gated workflow file, and only an EXACT
+# match is destroyable. Nothing else is reachable — not by a typo, not by a `workflow_dispatch`
+# input, not by a glob. A denylist would have the opposite property: everything is
+# destroyable until someone remembers to add it.
+#
+# ⚠️ THE GUARD RUNS FIRST, BEFORE `actions/checkout` AND BEFORE ANY AWS CREDENTIAL EXISTS.
+# A refused run never holds a credential, which is also why the refusal is cheap to test.
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: "Path to the Terraform root module to DESTROY (relative to the repo root). Must appear verbatim in destroyable_directories."
+        required: true
+        type: string
+      destroyable_directories:
+        description: "Newline-separated allow-list of root modules this caller may destroy. EXACT paths only — globs are rejected, not expanded. Anything absent is refused."
+        required: true
+        type: string
+      aws_region:
+        description: "AWS region"
+        required: false
+        type: string
+        default: "us-east-1"
+      role_arn:
+        description: "IAM role ARN to assume (enforcer role)"
+        required: true
+        type: string
+      terraform_version:
+        description: "Terraform version"
+        required: false
+        type: string
+        default: "latest"
+      app_id:
+        description: "GitHub App ID for reading private sbe-devops Terraform module repos. Pass via 'with:' using vars.SBE_DEVOPS_APP_ID."
+        required: false
+        type: string
+        default: ""
+    secrets:
+      app_private_key:
+        description: "GitHub App private key for reading private sbe-devops Terraform module repos."
+        required: false
+
+# Terraform must never wait on stdin in CI. A stack with an undefaulted variable and no
+# CI-side value otherwise drops into interactive mode and reads a stdin that will never
+# answer — for the FULL job timeout. Fitbooks INFRA lost an evening to exactly this on
+# `Plan accounts (mgmt)`: three separate 30-minute hangs, the job's stdout showing the
+# variable's own description text mid-prompt.
+#
+# A destroy needs this at least as much as an apply: `terraform plan -destroy` still
+# evaluates every variable in the root module, so a missing one hangs the teardown.
+env:
+  TF_INPUT: "0"
+
+jobs:
+  destroy:
+    name: Destroy
+    runs-on: ubuntu-latest
+    # Hang protection — a destroy of EKS/RDS genuinely runs long, and a timeout that fires
+    # mid-destroy leaves both a partial teardown and a held state lock. Sized generously on
+    # purpose; without this a stuck job runs to GitHub's 360-minute default.
+    timeout-minutes: 60
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      APP_ID: ${{ inputs.app_id }}
+
+    steps:
+      # ──────────────────────────────────────────────────────────────────────────────────
+      # 🔑 tests/destroy-guard.sh EXTRACTS THE LINES BETWEEN THE TWO MARKERS AND RUNS THESE
+      # EXACT BYTES. There is no second copy of this logic to drift from, and the extractor
+      # fails closed: if the markers move, the test errors instead of passing.
+      #
+      # ⚠️ EVERY GitHub context stays in `env:` BELOW — never inside the body. The moment
+      # the body contains `${{ … }}` the extracted bytes stop being runnable, so the test
+      # asserts their absence and fails the build if one appears.
+      # ──────────────────────────────────────────────────────────────────────────────────
+      - name: Refuse a working_directory that is not on the caller's allow-list
+        env:
+          CANDIDATE: ${{ inputs.working_directory }}
+          ALLOW_LIST: ${{ inputs.destroyable_directories }}
+        run: |
+          # >>> GUARD BEGIN
+          set -euo pipefail
+
+          # Normalise exactly one way, and the same way on both sides of the comparison:
+          # trim surrounding whitespace and stray CR, strip leading "./", strip trailing "/".
+          # Anything beyond that is NOT normalised — no symlink resolution, no case folding,
+          # no glob expansion — because every one of those turns "exact match" into a
+          # judgement call about paths that do not exist yet.
+          norm() {
+            local p
+            p="$(printf '%s' "$1" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            while [ "${p#./}" != "$p" ]; do p="${p#./}"; done
+            while [ "$p" != "/" ] && [ "${p%/}" != "$p" ]; do p="${p%/}"; done
+            printf '%s' "$p"
+          }
+
+          refuse() {
+            echo "::error title=Destroy refused::$1"
+            exit 1
+          }
+
+          candidate="$(norm "${CANDIDATE:-}")"
+
+          [ -n "$candidate" ] || refuse "working_directory is empty. A destroy with no explicit target is refused."
+
+          # A path that cannot be compared is refused, not normalised into something
+          # comparable: "tf/aws-vpc/../aws-bootstrap" is an allow-list bypass by
+          # construction, and resolving it here would mean this guard decides what a path
+          # means instead of the caller.
+          case "$candidate" in
+            /*)      refuse "working_directory \"$candidate\" is absolute. Paths are relative to the repository root." ;;
+            *..*)    refuse "working_directory \"$candidate\" contains \"..\". A traversal cannot be matched against an allow-list." ;;
+            *[*?[]*) refuse "working_directory \"$candidate\" contains a glob character. The destroy target is one exact directory." ;;
+          esac
+
+          # 🔴 FAIL CLOSED. An empty or whitespace-only allow-list makes NOTHING
+          # destroyable. The input is `required: true`, so this is the second line of the
+          # same defence, and it is the one that holds when a caller passes an empty var.
+          if [ -z "$(printf '%s' "${ALLOW_LIST:-}" | tr -d '[:space:]')" ]; then
+            refuse "destroyable_directories is empty, so nothing is destroyable. Add the exact path to the caller's allow-list input."
+          fi
+
+          # The whole list is validated even after a match is found: a bad entry is a
+          # defect in the caller's control surface and must be reported on the run that
+          # introduced it, not on some later run that happens to target it.
+          matched=""
+          while IFS= read -r raw || [ -n "$raw" ]; do
+            entry="$(norm "$raw")"
+            [ -n "$entry" ] || continue
+            case "$entry" in
+              # 🔑 A GLOB IS A HARD ERROR, NOT A QUIET NON-MATCH. Exact matching would
+              # already refuse "tf/*", but silently — and a caller who believes patterns
+              # work will "fix" it by widening something else. Say it plainly instead.
+              *[*?[]*) refuse "allow-list entry \"$entry\" contains a glob character. Globs are NOT supported — list every destroyable directory exactly, because a pattern silently widens what can be destroyed." ;;
+              /*)      refuse "allow-list entry \"$entry\" is absolute. Use a path relative to the repository root." ;;
+              *..*)    refuse "allow-list entry \"$entry\" contains \"..\"." ;;
+            esac
+            if [ "$entry" = "$candidate" ]; then
+              matched="$entry"
+            fi
+          done <<ALLOWLIST
+          ${ALLOW_LIST:-}
+          ALLOWLIST
+
+          if [ -z "$matched" ]; then
+            allowed="$(printf '%s' "${ALLOW_LIST:-}" | tr '\n' ' ')"
+            refuse "\"$candidate\" is not on this caller's destroy allow-list. Allowed: $allowed"
+          fi
+
+          echo "Destroy allowed: \"$candidate\" matched the caller's allow-list exactly."
+          # <<< GUARD END
+
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      # No `fmt -check` here, unlike tf-apply.yml. Formatting is a gate on what you are
+      # about to CREATE; blocking a teardown on cosmetics strands live resources that
+      # nobody can remove without editing the stack first.
+
+      - name: Generate token for private modules
+        id: module-token
+        if: env.APP_ID != ''
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ inputs.app_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: sbe-devops
+
+      - name: Configure git credentials for private modules
+        if: steps.module-token.conclusion == 'success'
+        run: |
+          git config --global url."https://oauth2:${{ steps.module-token.outputs.token }}@github.com".insteadOf "https://github.com"
+
+      - name: Terraform Init
+        run: terraform init -input=false -upgrade
+        working-directory: ${{ inputs.working_directory }}
+
+      # PLAN THE DESTROY, THEN APPLY THAT PLAN — never `destroy -auto-approve`. The saved
+      # plan is what gets applied, so what the artifact records is what actually ran; a
+      # second evaluation could legitimately differ from the one a human read.
+      - name: Terraform Plan (destroy)
+        run: terraform plan -destroy -input=false -no-color -out=destroy.tfplan
+        working-directory: ${{ inputs.working_directory }}
+
+      # The binary plan is the evidence; the rendered text is the part a person can read in
+      # six months when asked what the teardown removed.
+      - name: Render the destroy plan
+        run: terraform show -no-color destroy.tfplan > destroy-plan.txt
+        working-directory: ${{ inputs.working_directory }}
+
+      - name: Upload the destroy plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: destroy-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ inputs.working_directory }}/destroy.tfplan
+            ${{ inputs.working_directory }}/destroy-plan.txt
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Terraform Apply (the saved destroy plan)
+        run: terraform apply -input=false destroy.tfplan
+        working-directory: ${{ inputs.working_directory }}
