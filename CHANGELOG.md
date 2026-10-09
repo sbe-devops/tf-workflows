@@ -10,6 +10,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This re
 
 ### Added
 
+- **`tf-module-ci.yml`'s `terraform test` gate now detects both test syntaxes and fails when zero runs execute.** Two ways the gate shipped in `v0.11.0`'s predecessor could pass without testing anything (PROOF, review round 2 — which arrived after that PR had merged):
+
+  · **`*.tftest.json` was not detected at all.** A JSON-only suite was skipped and the job went **green on no tests**. Detection now matches `*.tftest.hcl` **and** `*.tftest.json`.
+
+  · **`-maxdepth 2` found more than `terraform test` runs, not less.** `examples/foo.tftest.hcl` was detected, terraform ignored it, and the run executed **zero** tests and still exited 0 — printing `Success! 0 passed, 0 failed.` Detection is now depth-unlimited *on purpose*: a test file anywhere means the module **intends** tests, and the new assertion reports it when terraform does not run them, rather than detection quietly deciding which paths count.
+
+  🔴 **New step: `Assert the tests actually executed`.** It parses the run summary and **fails when `passed + failed == 0`**, when no summary can be found at all, and when no output was captured. The PR comment gains a third state — `❌ files found, zero runs executed` — because rendering that as a pass is the defect and rendering it as a skip would hide it.
+
+  *Why it matters beyond this repo:* the original comment claimed `-maxdepth 2` covered "exactly" what terraform runs. It was wrong in both directions, and nothing could have caught it, because **the gate's failure mode was to pass.** `tests/` + `ci.yml` now run both gates' own bytes and 6 mutations against them.
+
 - **`tf-destroy.yml`** — reusable teardown for a **lower** environment: plan the destroy to a file, upload both the binary plan and its `terraform show` rendering as a 90-day artifact, then apply **that saved plan**. Never a bare `terraform destroy -auto-approve`, so the artifact is what actually ran rather than a second evaluation of it.
 
   **Why:** ADR-0045 Amendment 1 defines the lower-environment deliverable as change + teardown + stand-up, all through CI. This repo had a plan path and an apply path and **no destroy path**, so every teardown was a laptop holding enforcer credentials. Fitbooks adopts first.

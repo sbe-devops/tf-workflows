@@ -17,8 +17,8 @@ permissions:
   contents: read
 
 jobs:
-  destroy-guard:
-    name: destroy guard
+  gates:
+    name: workflow test gates
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -41,6 +41,15 @@ jobs:
       # meaning "tests exist".
       - name: tests/mutate-destroy-guard.sh
         run: tests/mutate-destroy-guard.sh
+
+      # tf-module-ci.yml's two test gates (tf-workflows#7): test-file detection
+      # against real directory fixtures, and the zero-runs assertion against
+      # captured `terraform test` output.
+      - name: tests/module-ci-guard.sh
+        run: tests/module-ci-guard.sh
+
+      - name: tests/mutate-module-ci.sh
+        run: tests/mutate-module-ci.sh
 
       - name: Shellcheck the test scripts
         run: shellcheck tests/*.sh
