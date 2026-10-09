@@ -51,5 +51,11 @@ jobs:
       - name: tests/mutate-module-ci.sh
         run: tests/mutate-module-ci.sh
 
+      # The environment-input wiring (tf-workflows#8): ADR-0046 A4.1 needs the
+      # job to run in a GitHub Environment, which is a property of the job's
+      # DEFINITION, so these are static assertions rather than a run.
+      - name: tests/environment-input.sh
+        run: tests/environment-input.sh
+
       - name: Shellcheck the test scripts
         run: shellcheck tests/*.sh

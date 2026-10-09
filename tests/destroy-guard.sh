@@ -308,6 +308,65 @@ asserts "the destroy is PLANNED to a file" \
 asserts "and the APPLY applies that saved plan" \
   'terraform apply -input=false destroy\.tfplan' \
   "applying anything else re-evaluates what a human already read"
+# 🔴 THE DESTROY PLAN AND APPLY STEPS ARE PINNED AS LITERALS, not checked for
+# the absence of one bad spelling. Measured on tf-aws-bootstrap#2:
+# `terraform plan -destroy` against a `prevent_destroy` resource exits 1 AND
+# STILL WRITES THE PLAN FILE, which `terraform show` renders as a destroy with
+# "planned the following actions, but then encountered a problem". So the only
+# thing stopping the apply is the plan step failing the job.
+#
+# ⚠️ MY FIRST VERSION GREPPED FOR `continue-on-error: true` AND PROOF BROKE IT
+# IN THREE WAYS (r2): `continue-on-error: ${{ true }}`, `if: always()` on the
+# apply, and `run: … || true` on the plan. A denylist of the spellings I thought
+# of is not a control — the same lesson as the trust grader's operators, and as
+# `tf-aws-ecr`'s goldens. So this is an ALLOW-LIST: the block must be EXACTLY
+# these lines, and anything added to it fails, without anyone predicting what.
+assert_step_block() {
+  local label="$1" expected="$2" got
+  # The step's own lines: from its `- name:` up to the next step, comment or
+  # blank line at step indentation. Trailing whitespace is stripped so the
+  # comparison is about content, not editors.
+  # 🔴 THE EXTRACTOR ENDS WHERE *YAML* ENDS THE STEP, not at the first blank or
+  # comment. PROOF r3 broke the first version two ways, both actionlint-valid
+  # and both parsed by PyYAML as keys ON the step:
+  #   · a BLANK line, then `continue-on-error: true`  (plan)
+  #   · a step-indented `# …`, then `if: always()`    (apply)
+  # Stopping early meant the pin compared the first three lines and shrugged at
+  # whatever followed. So: blanks and comments are SKIPPED and collection
+  # continues; the block ends only at the next step or at a dedent.
+  got="$(printf '%s' "$expected" | head -1 | { read -r first; awk -v first="$first" '
+    index($0, first)   { inblock = 1; print; next }
+    !inblock           { next }
+    /^      - name: /  { exit }            # the next step
+    /^[[:space:]]*$/   { next }            # blank: skip, keep looking
+    /^[[:space:]]*#/   { next }            # comment: skip, keep looking
+    /^        [^ ]/    { print; next }     # a key of THIS step (8 spaces)
+    { exit }                               # dedent: the steps list is over
+  ' "$workflow"; })"
+  if [ "$got" = "$expected" ]; then
+    printf '✅ pinned   %s is exactly the expected block\n' "$label"
+    pass=$((pass + 1))
+  else
+    printf '❌ FAIL  %s does not match the pinned block\n' "$label"
+    printf '        expected:\n%s\n        got:\n%s\n' "$expected" "${got:-<nothing>}"
+    fail=$((fail + 1))
+  fi
+}
+
+# shellcheck disable=SC2016  # the ${{ … }} in these literals is YAML the
+# workflow contains, not a shell expansion — expanding it would defeat the pin.
+# 🔑 THESE LITERALS ARE THE INVARIANT. A reviewer reading a diff here is reading
+# exactly what will run against a real state file. Changing the command is
+# allowed; changing it WITHOUT changing this literal is not.
+assert_step_block "the destroy PLAN step" '      - name: Terraform Plan (destroy)
+        run: terraform plan -destroy -input=false -no-color -out=destroy.tfplan
+        working-directory: ${{ inputs.working_directory }}'
+
+# shellcheck disable=SC2016  # same: YAML, not a shell expansion
+assert_step_block "the destroy APPLY step" '      - name: Terraform Apply (the saved destroy plan)
+        run: terraform apply -input=false destroy.tfplan
+        working-directory: ${{ inputs.working_directory }}'
+
 denies "no bare 'terraform destroy' anywhere" \
   'terraform destroy' \
   "a bare destroy bypasses the plan artifact entirely"

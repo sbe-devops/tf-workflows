@@ -315,6 +315,9 @@ difference between a list a reviewer approved and a list the dispatcher wrote.*
 | `tf-apply.yml` | `role_arn` | `string` | yes | — | IAM role ARN to assume — must be the enforcer role |
 | `tf-apply.yml` | `aws_region` | `string` | no | `us-east-1` | AWS region passed to `aws-actions/configure-aws-credentials` |
 | `tf-apply.yml` | `terraform_version` | `string` | no | `latest` | Terraform version for `hashicorp/setup-terraform` |
+| `tf-plan.yml` | `environment` | `string` | no | `""` | GitHub Environment to run the job in. **Required to satisfy ADR-0046 Amendment 4** — see below. Empty means no environment and no `environment` claim |
+| `tf-apply.yml` | `environment` | `string` | no | `""` | GitHub Environment to run the job in. **Required to satisfy ADR-0046 Amendment 4** — see below. Empty means no environment and no `environment` claim |
+
 | `tf-destroy.yml` | `working_directory` | `string` | **yes** | — | Root module to **destroy** (relative to the repo root). Must appear verbatim in `destroyable_directories` |
 | `tf-destroy.yml` | `destroyable_directories` | `string` | **yes** | — | 🔴 Newline-separated allow-list of root modules this caller may destroy. **Exact paths only** — globs are rejected, not expanded; anything absent is refused |
 | `tf-destroy.yml` | `role_arn` | `string` | **yes** | — | IAM role ARN to assume — must be the enforcer role |
@@ -325,6 +328,60 @@ difference between a list a reviewer approved and a list the dispatcher wrote.*
 | `tf-module-ci.yml` | `working_directory` | `string` | yes | — | Path to the module (relative to the repo root) |
 | `tf-module-ci.yml` | `terraform_version` | `string` | no | `latest` | Terraform version for `hashicorp/setup-terraform` |
 | `tf-module-ci.yml` | `tflint_version` | `string` | no | `latest` | TFLint version for `terraform-linters/setup-tflint` |
+
+---
+
+## The `environment` input, and why every workflow here has one
+
+**ADR-0046 Amendment 4 makes one live check the gate:** every GitHub-OIDC role in an **upper** account must carry a `StringEquals` on the `environment` claim, pinned to a named GitHub Environment. A token only carries that claim when **its job runs in an Environment**.
+
+> ### 🔴 **AND A CALLER CANNOT PUT A REUSABLE WORKFLOW'S JOB IN ONE.** `jobs.<id>.environment` is not a valid key on a job that is a `uses:` call.
+> ⇒ *Without an input on this side, **no caller can satisfy Amendment 4 at all**.* That is the whole reason these inputs exist; they are not a convenience.
+
+```yaml
+jobs:
+  apply-prod:
+    permissions:
+      id-token: write
+      contents: read
+    uses: sbe-devops/tf-workflows/.github/workflows/tf-apply.yml@v0.11.0
+    with:
+      working_directory: terraform/prod
+      role_arn: arn:aws:iam::123456789012:role/your-project-terraform-enforcer
+      environment: prod              # ← the job runs HERE, so the token carries it (A4.1a: <env>, Eric-gated)
+```
+
+⚠️ **The name is one string that has to be identical in two repositories** — this input, and `destroy_environment` / the enforcer trust in the consumer's `tf-aws-github-oidc` stack. A mismatch, or omitting this input, produces **`Not authorized to perform sts:AssumeRoleWithWebIdentity`** — the *same* message as "not opted in" and "wrong branch". So each of these workflows **echoes the Environment it is actually running in, before the credential step**, and warns loudly when there is none. The echo is what makes those causes tellable apart.
+
+> ### 🔴 **"THE ENVIRONMENT DOES NOT EXIST" IS THE ONE CAUSE THAT DOES *NOT* FAIL — IT SUCCEEDS.**
+> **GitHub auto-creates an Environment a workflow references but that the repository does not have, and the created one has NO protection rules.** *(Found by PROOF on this PR; GitHub's own documented behaviour.)*
+> ⇒ **If the IAM trust pins `prod` before a protected `prod` exists, the first run creates `prod` with no reviewers, the token carries `environment: prod`, the role is assumed, and the apply proceeds unreviewed.** The pin is satisfied and the gate is not there. *An earlier version of this section listed "Environment does not exist" as an `AccessDenied` cause; that was wrong in the dangerous direction.*
+>
+> **So the ORDER matters, and it is not optional:**
+> 1. **create the Environment and configure its protection** *(required reviewers on `<env>`; none on `<env>-plan`)*
+> 2. 🔴 **turn OFF "Allow administrators to bypass configured protection rules"** — *it is ON by default, and the people who hold the automation token are administrators ([A4.1b](https://github.com/sbe-devops/corp/blob/main/decisions/0046-ensemble-mcp-the-governed-path-for-agent-action.md)). With bypass on, the reviewer requirement is advisory for exactly the identity it is meant to constrain*
+> 3. **then** pin it in IAM, and **then** pass it here
+>
+> ⚠️ **Steps 1–2 are not verifiable from this repo.** An Environment's existence and its protection rules live in the consumer's repository settings, and nothing in a reusable workflow can read them. **A4.2's live check reads them instead** *(`environment_pin_findings`: the pin, and the bypass setting, read live — unreadable counts as a finding).* Until that check runs, **"the Environment is protected" is a claim, not a control.**
+
+### 🔑 Two Environments per environment — the pair A4.1a rules
+
+`tf-plan.yml` runs on `pull_request`. If the Environment it names carried **required reviewers**, **every PR plan would wait on a human** — for a *read-only* planner role. So **ADR-0046 A4.1a** rules a pair, and a consumer needs both:
+
+| workflow | Environment | protection rules | why |
+|---|---|---|---|
+| `tf-plan.yml` | **`<env>-plan`** | 🔴 **none** | the claim has to exist for A4.2's check to pass, and a PR plan must not block on a human |
+| `tf-apply.yml` · `tf-destroy.yml` | **`<env>`** | ✅ **Eric-gated** (required reviewers) | anything that mutates stops for a person |
+
+**Both are pinned in IAM** — the planner role pins `<env>-plan`, the enforcer pins `<env>`. ⇒ *An Environment with no protection rules still produces the `environment` claim, so the structural check is satisfied without gating pull requests.* 🔑 **The pair is the point: it is the plan/apply split expressed as two Environments, so "may I look" and "may I change it" stop being the same approval.**
+
+```yaml
+# PR plans — no reviewers on tst-plan, so they just run
+with: { environment: tst-plan, role_arn: …terraform-planner }
+
+# merges and dispatches — tst has required reviewers
+with: { environment: tst,      role_arn: …terraform-enforcer }
+```
 
 ---
 

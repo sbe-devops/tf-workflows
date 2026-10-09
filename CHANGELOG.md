@@ -8,7 +8,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This re
 
 ## [Unreleased]
 
+### Fixed
+
+- 🔴 **"The Environment does not exist" was listed as an `AccessDenied` cause. It is the one cause that SUCCEEDS.** **GitHub auto-creates an Environment a workflow references but the repository does not have, with NO protection rules** — so if the IAM trust pins `prod` before a *protected* `prod` exists, the first run creates `prod` with no reviewers, the token carries `environment: prod`, the role is assumed and the apply proceeds **unreviewed**. The pin is satisfied and the gate simply is not there. *Found by PROOF on this PR; my README had it wrong in the dangerous direction.*
+
+  The README now carries the **ordering rule** — create and protect the Environment, **turn off "Allow administrators to bypass configured protection rules"** (it is ON by default, and the identity holding the automation token is an administrator, ADR-0046 A4.1b), *then* pin it in IAM, *then* pass it here — and states plainly that **steps 1–2 cannot be verified from this repo**: an Environment's protection lives in the consumer's repository settings, which no reusable workflow can read. A4.2's live check reads them instead. **Until it runs, "the Environment is protected" is a claim, not a control.**
+
+- **`tests/destroy-guard.sh` now asserts the destroy plan and apply steps are never `continue-on-error`.** Measured on `tf-aws-bootstrap#2`: `terraform plan -destroy` against a `prevent_destroy` resource exits 1 **and still writes the plan file**, which `terraform show` renders as a destroy with *"planned the following actions, but then encountered a problem"*. So the only thing stopping the apply is the plan step failing the job — and this repo's house pattern for other steps is `continue-on-error: true` plus a later `Fail if …`, which applied here would hand the apply a plan file produced by a failed plan. Two mutations (M20, M21) prove the assertion fails when either step is softened.
+
+
+- 🔴 **The stated reason for `terraform init -upgrade` in `tf-plan.yml`/`tf-apply.yml` is wrong, and the flag is worse than unnecessary.** `v0.8.1` justified it as making *"pinned module sources always re-fetched from the declared `?ref=` tag rather than the runner cache."* **There is no runner cache to defeat:** no workflow here has an `actions/cache` step (verified across all five), every job is `ubuntu-latest`, and each run starts from a fresh checkout with no `.terraform/` directory — so plain `init` already fetches modules fresh. *Found by INFRA (T3); confirmed independently here.*
+
+  ⚠️ **And measuring it turned up the real problem, which points the other way.** With a committed `.terraform.lock.hcl` pinning `hashicorp/aws 5.0.0` under a `>= 5.0.0` constraint:
+
+  ```
+  terraform init           → "Reusing previous version … from the dependency lock file"   → 5.0.0
+  terraform init -upgrade  → "Installing hashicorp/aws v6.68.0"                           → 6.68.0, lock REWRITTEN
+  ```
+
+  ⇒ **`-upgrade` ignores and overwrites the committed lock file — across a MAJOR version.** `tf/aws-ecr` ships a lock file today, and plan and apply are **separate runs**, so the provider version a human reviewed in the plan is not guaranteed to be the one the apply uses. **That is a reproducibility hole in an apply pipeline, not a cache optimisation.**
+
+  **This release corrects the rationale only.** Removing the flag is a behaviour change for every consumer and gets its own PR, release note and review — with the measurement above as the argument, and INFRA's `init` + `terraform get -update` split as the shape if a cache step is ever added. **`-upgrade` must not come back while any consumer commits a lock file.**
+
 ### Added
+
+- **`tf-plan.yml` and `tf-apply.yml` accept an `environment` input**, and both report the Environment they are running in before assuming a role. `tf-destroy.yml` got the same input in #6.
+
+  **Why:** ADR-0046 Amendment 4 makes one live check the gate — every GitHub-OIDC role in an upper account must pin the `environment` claim to a named GitHub Environment. A token carries that claim only when its **job** runs in one, and 🔴 **`jobs.<id>.environment` is not a valid key on a `uses:` reusable-workflow call**, so a caller cannot put these jobs in an Environment from outside. **Without these inputs, no caller can satisfy Amendment 4 at all.**
+
+  ⚠️ **The Environment name is one string duplicated across two repositories** — this input, and the enforcer trust in the consumer's `tf-aws-github-oidc` stack. Omitting it, or a typo, yields `Not authorized to perform sts:AssumeRoleWithWebIdentity` — **the same message as "not opted in", "wrong branch", and "Environment does not exist"**. So each job now echoes the resolved Environment *before* the credential step and emits a `::warning` when there is none. Fail-closed either way; this is what makes it diagnosable.
+
+  🔴 **Open question, flagged rather than decided:** `tf-plan.yml` runs on `pull_request`, so an Environment with **required reviewers** makes every PR plan wait on a human. An Environment can exist without protection rules and still produce the claim, so the structural check can be met without gating PRs — but which way a consumer should go is a policy call, not a workflow one.
 
 - **`tf-module-ci.yml`'s `terraform test` gate now detects both test syntaxes and fails when zero runs execute.** Two ways the gate shipped in `v0.11.0`'s predecessor could pass without testing anything (PROOF, review round 2 — which arrived after that PR had merged):
 
