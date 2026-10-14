@@ -8,7 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This re
 
 ## [Unreleased]
 
+---
+
+## [v0.11.0] - 2026-10-14
+
 ### Fixed
+
+- 🔴 **The destroy guard's own tests could be walked around, and `v0.11.0` was held until they could not** (#9). The hard-step assertion first grepped for one spelling of `continue-on-error: true`; PROOF got past it with the expression form, `if: always()` on the apply, `|| true` on the plan, a blank line or comment before the key, a **second** apply step, and finally a **nameless** `- run:` step. The destroy plan step, the apply step **and the ordered list of every step in the job** are now pinned as literals — an allow-list of the structure, so anything added fails without anyone predicting it. `tests/mutate-destroy-guard.sh` declares **28** mutations and fails if the number that ran differs, after one mutation once silently never executed while the sweep reported green.
 
 - 🔴 **"The Environment does not exist" was listed as an `AccessDenied` cause. It is the one cause that SUCCEEDS.** **GitHub auto-creates an Environment a workflow references but the repository does not have, with NO protection rules** — so if the IAM trust pins `prod` before a *protected* `prod` exists, the first run creates `prod` with no reviewers, the token carries `environment: prod`, the role is assumed and the apply proceeds **unreviewed**. The pin is satisfied and the gate simply is not there. *Found by PROOF on this PR; my README had it wrong in the dangerous direction.*
 
