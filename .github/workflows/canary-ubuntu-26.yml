@@ -14,6 +14,9 @@ permissions:
 
 jobs:
   module-ci:
+    permissions:
+      contents: read
+      pull-requests: write   # what tf-module-ci declares; real callers grant the same
     uses: ./.github/workflows/tf-module-ci.yml
     with:
       working_directory: canary/module
