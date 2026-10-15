@@ -44,7 +44,7 @@ env:
 jobs:
   validate:
     name: Validate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # Hang protection — fmt/validate/tflint/checkov on a single module.
     # Without this a stuck job runs to GitHub's 360-minute default.
     timeout-minutes: 15

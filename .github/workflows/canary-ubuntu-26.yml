@@ -1,0 +1,29 @@
+name: canary-ubuntu-26
+
+# CANARY (branch canary/ubuntu-26-04 only, never merged). GitHub moves ubuntu-latest to
+# Ubuntu 26 on 2026-10-19. This runs the reusable tf-module-ci (runs-on switched to
+# ubuntu-26.04 on this branch) against a fixture module, and tf-plan up to its AWS
+# authentication (no role trusts this repo, so that step is expected to fail).
+on:
+  push:
+    branches: [canary/ubuntu-26-04]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  module-ci:
+    uses: ./.github/workflows/tf-module-ci.yml
+    with:
+      working_directory: canary/module
+
+  plan:
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    uses: ./.github/workflows/tf-plan.yml
+    with:
+      working_directory: canary/module
+      role_arn: arn:aws:iam::000000000000:role/canary-no-such-role

@@ -61,7 +61,7 @@ env:
 jobs:
   plan:
     name: Plan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # 🔴 THE ENVIRONMENT IS AN INPUT, NOT A CALLER JOB KEY, and ADR-0046
     # Amendment 4 is why it has to exist at all: the live gate is that every
     # upper-account GitHub-OIDC role carries a `StringEquals` on the
