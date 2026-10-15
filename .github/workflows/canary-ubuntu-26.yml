@@ -30,3 +30,15 @@ jobs:
     with:
       working_directory: canary/module
       role_arn: arn:aws:iam::000000000000:role/canary-no-such-role
+
+  # The runner-image assumptions GITOPS repos make on ubuntu-latest (eks-network-policies,
+  # eks-aws-load-balancer-controller CI): pip --user on the system Python, and the
+  # preinstalled kustomize / yq / helm / jq.
+  tools:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - name: pip install --user (as those CIs do)
+        run: python3 --version && python3 -m pip install --user 'pyyaml==6.0.2' && python3 -c 'import yaml; print("pyyaml", yaml.__version__)'
+      - name: preinstalled tools
+        run: kustomize version && yq --version && helm version --short && jq --version
