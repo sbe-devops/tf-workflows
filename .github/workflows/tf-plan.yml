@@ -147,23 +147,63 @@ jobs:
         run: |
           git config --global url."https://oauth2:${{ steps.module-token.outputs.token }}@github.com".insteadOf "https://github.com"
 
-      # Checkov runs AFTER the module token, and downloads the stack's modules with it, so
-      # it scans what the stack DEPLOYS, not just its root .tf. Before, it saw the root
-      # only (on a stack that is one module call: one check). GITHUB_PAT is checkov's own
-      # input for private GitHub modules (x-access-token basic auth); empty when no
-      # app_id is passed, which is today's behaviour. The pin moved off v12.1347.0
-      # (2022, checkov 2.0.930, which parses some of our modules to zero resources).
-      # soft_fail is UNCHANGED: this reports, it does not gate (tests/checkov-sees-modules.sh).
+      # ── Checkov: sees what the stack DEPLOYS, never holds a credential ───────────
+      # FB-08: checkov saw the root .tf only (one check on a stack that is one module
+      # call). So THIS step fetches the stack's modules, with the token above, through
+      # plain git in a step we control, into checkov's own layout. checkov then runs with
+      # NO token, NO network and the working directory mounted READ-ONLY (PROOF on #11:
+      # the third-party action handed GITHUB_PAT and the tokenised clones to an image
+      # behind a mutable tag). Clones keep no .git, so no remote URL survives. A module
+      # that can't be fetched is a ::warning (checkov is blind to it), never a failure.
+      - name: Fetch modules for checkov
+        id: checkov-modules
+        working-directory: ${{ inputs.working_directory }}
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          # Each git::https://github.com/<org>/<repo>[//sub]?ref=<ref> source, from the root
+          # .tf and (recursively) from fetched modules outside their examples/ and tests/,
+          # cloned the way checkov lays modules out: .external_modules/github.com/<org>/<repo>/<ref>
+          # (the whole repo; checkov resolves //sub itself). .git is removed from every clone.
+          re='source[[:space:]]*=[[:space:]]*"git::https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)(//[^"?]*)?\?ref=([A-Za-z0-9_.-]+)"'
+          tried=" " fetched=0 missed=""
+          for _ in 1 2 3 4 5 6; do
+            new=0
+            while IFS= read -r line; do
+              [[ $line =~ $re ]] || continue
+              org=${BASH_REMATCH[1]} repo=${BASH_REMATCH[2]%.git} ref=${BASH_REMATCH[4]}
+              key="$org/$repo/$ref"
+              case "$tried" in *" $key "*) continue ;; esac
+              tried="$tried$key " new=1
+              d=".external_modules/github.com/$key"
+              [ -d "$d" ] && continue   # already laid out (a re-run): never clone over it
+              if git clone -q --depth 1 -b "$ref" "https://github.com/$org/$repo.git" "$d" >/dev/null 2>&1; then
+                rm -rf "$d/.git"; fetched=$((fetched + 1))
+              else
+                rm -rf "$d"; missed="$missed github.com/$key"
+              fi
+            done < <(cat ./*.tf 2>/dev/null; find .external_modules -name '*.tf' -not -path '*/examples/*' -not -path '*/tests/*' -exec cat {} + 2>/dev/null)
+            [ "$new" -eq 1 ] || break
+          done
+          # shellcheck disable=SC2086  # deliberate: one word per missed module
+          set -- $missed
+          echo "checkov modules: ${fetched} fetched, $# not fetched"
+          for m in "$@"; do echo "::warning title=checkov is blind to a module::${m} could not be fetched; checkov will not scan it"; done
+          exit 0
+
+      # The image by DIGEST (checkov 3.3.29, the multi-arch index), not the action:
+      # a tag can move, a digest can't. --network none: no update check, no upload, no
+      # phone-home; nothing in it can leave. REPORT-ONLY, as before: --soft-fail, and
+      # continue-on-error so a checkov crash can't turn a consumer red either.
+      # tests/checkov-sees-modules.sh pins this step's bytes.
       - name: Checkov Scan
         id: checkov
-        uses: bridgecrewio/checkov-action@6f26dc90000b74feb589a906cdfae540f5119895 # v12.3134.0 (checkov 3.3.29)
-        with:
-          directory: ${{ inputs.working_directory }}
-          framework: terraform
-          soft_fail: true
-          output_format: cli
-          download_external_modules: true
-          github_pat: ${{ steps.module-token.outputs.token }}
+        working-directory: ${{ inputs.working_directory }}
+        continue-on-error: true
+        run: |
+          docker run --rm --network none -v "$PWD:/tf:ro" -w /tf \
+            ghcr.io/bridgecrewio/checkov@sha256:3cc125b5337717b7303dbddd4e79374c120687b5ff6a24f9abdad56b562469f3 \
+            -d /tf --framework terraform --download-external-modules true --soft-fail -o cli
 
       - name: Terraform Init
         run: terraform init -input=false -upgrade
