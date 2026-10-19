@@ -11,15 +11,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This re
 ### Fixed
 
 - 🔴 **Checkov scanned almost nothing: on a stack that is one module call, exactly ONE check** (Fitbooks FB-08, on `tst/wireguard`). There were three causes, and each one alone would have kept it that way:
-  - it ran **before** the module token;
-  - it never downloaded external modules;
+  - it ran before the module token;
+  - it never fetched external modules;
   - `bridgecrewio/checkov-action@v12.1347.0` is from 2022 and runs checkov **2.0.930**, which parses `tf-aws-wireguard` to zero resources even when the module is on disk.
 
   Measured on Fitbooks' 9 tst stacks with SBE modules, the total went from **40 checks to 964**; on `tst/wireguard`, from **1 to 87**.
-  - **`tf-plan.yml`:** checkov now runs after the token, with `download_external_modules: true` and the token as `github_pat`. That's checkov's own input; the runner's git `insteadOf` config isn't visible inside a docker action.
-  - **Both `tf-plan.yml` and `tf-module-ci.yml`** are on `checkov-action@6f26dc9` (`v12.3134.0`, checkov 3.3.29).
-  - **`soft_fail` stays `true`.** This reports more, and it gates nothing. Making checkov gate is a separate, breaking decision.
-  - `tests/checkov-sees-modules.sh` asserts all of it, and `tests/mutate-checkov.sh` (8 mutations) proves each assertion can fail.
+  - **`tf-plan.yml`:** a new step of ours, *Fetch modules for checkov*, clones each `git::https://github.com/…?ref=` module (recursively, skipping modules' `examples/` and `tests/`) with the module token, through plain `git`, into checkov's own layout, and keeps no `.git`. A module it can't fetch is a `::warning` naming it.
+  - **Both `tf-plan.yml` and `tf-module-ci.yml`:** checkov runs as `docker run` of `ghcr.io/bridgecrewio/checkov@sha256:3cc125b5…` (3.3.29, **by digest**), with **`--network none`**, the working directory mounted **read-only**, and **no token**.
+  - **The third-party action is gone.** Its first replacement (PROOF on this PR) handed `GITHUB_PAT` and the tokenised clones to an image behind a mutable tag.
+  - **Still report-only:** `--soft-fail`, and `continue-on-error` so a crash can't turn a consumer red either.
+  - `tests/checkov-sees-modules.sh` pins the checkov step's keys and bytes, and fails if the token reaches any step but the git credentials. `tests/checkov-fetch.sh` runs the fetch step's own bytes against fixture stacks. `tests/mutate-checkov.sh` has 18 mutations, all killed.
 
 ---
 
