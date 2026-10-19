@@ -1,0 +1,60 @@
+name: canary-checkov
+
+# CANARY (branch canary/checkov-v12-3134 only, never merged). Proves on a real runner
+# that checkov-action@6f26dc9 (v12.3134.0, checkov 3.3.29) runs, keeps a run with
+# FAILING checks green under soft_fail: true, and downloads a stack's modules. The
+# private-module path (github_pat = the App token) can't run here: this repo holds no
+# App credentials.
+on:
+  push:
+    branches: [canary/checkov-v12-3134]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  module-ci:
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/tf-module-ci.yml
+    with:
+      working_directory: canary/module
+
+  # tf-plan's checkov step, verbatim (minus the token, which is empty here as it is for
+  # any caller without app_id), on a stack that is one module call.
+  stack-arm-download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkov Scan
+        id: checkov
+        uses: bridgecrewio/checkov-action@6f26dc90000b74feb589a906cdfae540f5119895 # v12.3134.0 (checkov 3.3.29)
+        with:
+          directory: canary/stack
+          framework: terraform
+          soft_fail: true
+          output_format: cli
+          download_external_modules: true
+          github_pat: ""
+      - name: The module was downloaded and scanned
+        run: |
+          set -euo pipefail
+          ls -d canary/stack/.external_modules/github.com/terraform-aws-modules/* && echo "module downloaded"
+          echo "checkov step outcome: ${{ steps.checkov.outcome }}"
+
+  # CONTROL: the old step (v12.1347.0, no download) on the same stack.
+  stack-arm-old:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkov Scan (old)
+        uses: bridgecrewio/checkov-action@v12.1347.0
+        with:
+          directory: canary/stack
+          framework: terraform
+          soft_fail: true
+          output_format: cli
