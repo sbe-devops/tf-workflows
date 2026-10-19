@@ -22,28 +22,36 @@ jobs:
     with:
       working_directory: canary/module
 
-  # tf-plan's checkov step, verbatim (minus the token, which is empty here as it is for
-  # any caller without app_id), on a stack that is one module call.
-  stack-arm-download:
+  # tf-plan's TWO checkov steps, their own bytes extracted from tf-plan.yml (no token
+  # here, as for any caller without app_id), on a stack that is one PUBLIC module call.
+  stack-arm-fetch-then-digest:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Checkov Scan
-        id: checkov
-        uses: bridgecrewio/checkov-action@6f26dc90000b74feb589a906cdfae540f5119895 # v12.3134.0 (checkov 3.3.29)
-        with:
-          directory: canary/stack
-          framework: terraform
-          soft_fail: true
-          output_format: cli
-          download_external_modules: true
-          github_pat: ""
-      - name: The module was downloaded and scanned
+      - name: Extract the two steps from tf-plan.yml
+        run: |
+          python3 - <<'PY'
+          import yaml
+          st = [s for j in yaml.safe_load(open(".github/workflows/tf-plan.yml"))["jobs"].values() for s in j["steps"]]
+          for i in ("checkov-modules", "checkov"):
+              open(f"/tmp/{i}.sh", "w").write(next(s for s in st if s.get("id") == i)["run"])
+          PY
+      - name: Fetch modules for checkov (tf-plan's bytes)
+        working-directory: canary/stack
+        run: bash /tmp/checkov-modules.sh
+      - name: No .git in the clones
+        working-directory: canary/stack
         run: |
           set -euo pipefail
-          ls -d canary/stack/.external_modules/github.com/terraform-aws-modules/* && echo "module downloaded"
-          echo "checkov step outcome: ${{ steps.checkov.outcome }}"
+          ls -d .external_modules/github.com/terraform-aws-modules/terraform-aws-s3-bucket/v4.1.2
+          [ -z "$(find .external_modules -name .git)" ] && echo "no .git in any clone"
+      - name: Checkov Scan (tf-plan's bytes)
+        id: checkov
+        working-directory: canary/stack
+        run: bash /tmp/checkov.sh
+      - name: The step's outcome
+        run: echo "checkov outcome ${{ steps.checkov.outcome }}"
 
   # CONTROL: the old step (v12.1347.0, no download) on the same stack.
   stack-arm-old:
