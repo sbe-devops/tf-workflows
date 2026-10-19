@@ -80,9 +80,12 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
         continue-on-error: true
 
+      # The pin moved off v12.1347.0 (2022, checkov 2.0.930, which parses some of our
+      # modules to zero resources: tf-aws-wireguard scanned 1 check). soft_fail is
+      # UNCHANGED: this reports, it does not gate (tests/checkov-sees-modules.sh).
       - name: Checkov Scan
         id: checkov
-        uses: bridgecrewio/checkov-action@v12.1347.0
+        uses: bridgecrewio/checkov-action@6f26dc90000b74feb589a906cdfae540f5119895 # v12.3134.0 (checkov 3.3.29)
         with:
           directory: ${{ inputs.working_directory }}
           framework: terraform

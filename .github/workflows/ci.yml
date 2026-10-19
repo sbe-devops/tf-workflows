@@ -57,5 +57,13 @@ jobs:
       - name: tests/environment-input.sh
         run: tests/environment-input.sh
 
+      # FB-08: checkov must SEE the modules (token first, download, a current pin) and
+      # must still not gate (soft_fail true). Static, on the parsed workflows.
+      - name: tests/checkov-sees-modules.sh
+        run: tests/checkov-sees-modules.sh
+
+      - name: tests/mutate-checkov.sh
+        run: tests/mutate-checkov.sh
+
       - name: Shellcheck the test scripts
         run: shellcheck tests/*.sh

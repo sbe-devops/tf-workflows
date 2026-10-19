@@ -8,6 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This re
 
 ## [Unreleased]
 
+### Fixed
+
+- 🔴 **Checkov scanned almost nothing: on a stack that is one module call, exactly ONE check** (Fitbooks FB-08, on `tst/wireguard`). There were three causes, and each one alone would have kept it that way:
+  - it ran **before** the module token;
+  - it never downloaded external modules;
+  - `bridgecrewio/checkov-action@v12.1347.0` is from 2022 and runs checkov **2.0.930**, which parses `tf-aws-wireguard` to zero resources even when the module is on disk.
+
+  Measured on Fitbooks' 9 tst stacks with SBE modules, the total went from **40 checks to 964**; on `tst/wireguard`, from **1 to 87**.
+  - **`tf-plan.yml`:** checkov now runs after the token, with `download_external_modules: true` and the token as `github_pat`. That's checkov's own input; the runner's git `insteadOf` config isn't visible inside a docker action.
+  - **Both `tf-plan.yml` and `tf-module-ci.yml`** are on `checkov-action@6f26dc9` (`v12.3134.0`, checkov 3.3.29).
+  - **`soft_fail` stays `true`.** This reports more, and it gates nothing. Making checkov gate is a separate, breaking decision.
+  - `tests/checkov-sees-modules.sh` asserts all of it, and `tests/mutate-checkov.sh` (8 mutations) proves each assertion can fail.
+
 ---
 
 ## [v0.11.0] - 2026-10-14
