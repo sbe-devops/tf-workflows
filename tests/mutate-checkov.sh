@@ -11,7 +11,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$here/.."
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/checkov-mutate.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
-EXPECTED=18
+EXPECTED=24
 ran=0 killed=0 bad=0
 
 # mutate <id> <test> <why> <description> <file> <old> <new>
@@ -68,12 +68,22 @@ mutate C11 $S "report-only even if it crashes" "a checkov crash turns the consum
   '        id: checkov\n        working-directory: ${{ inputs.working_directory }}\n        continue-on-error: true\n' '        id: checkov\n        working-directory: ${{ inputs.working_directory }}\n        continue-on-error: false\n'
 mutate C12 $S "exactly the pinned one" "module-ci's checkov gates (--soft-fail dropped)" tf-module-ci.yml ' --soft-fail -o cli' ' -o cli'
 echo "-- the fetch's behaviour"
-mutate F1 $F "4. a .git survived" "clones keep .git (remote URL in the tree)" tf-plan.yml 'rm -rf "$d/.git"; fetched' 'fetched'
+mutate F1 $F "4. a .git survived" "clones keep .git (remote URL in the tree)" tf-plan.yml 'rm -rf "$tmp/.git"; mv' 'mv'
 mutate F2 $F "3. followed a module's examples/" "examples/ followed" tf-plan.yml " -not -path '*/examples/*'" ''
 mutate F3 $F "2. the nested module b was not fetched" "no recursion (one round)" tf-plan.yml 'for _ in 1 2 3 4 5 6; do' 'for _ in 1; do'
-mutate F4 $F "the step exited" "a missing module fails the step" tf-plan.yml '          exit 0\n\n      # The image by DIGEST' '          [ "$#" -eq 0 ]\n\n      # The image by DIGEST'
-mutate F5 $F "5. a failed clone left a directory" "a failed clone leaves its dir (checkov skips it as present)" tf-plan.yml 'rm -rf "$d"; missed=' 'mkdir -p "$d"; missed='
-mutate F6 $F "6. run 2 re-cloned" "a re-run clones over (and deletes) present modules" tf-plan.yml '              [ -d "$d" ] && continue   # already laid out (a re-run): never clone over it\n' ''
+mutate F4 $F "the step exited" "a missing module fails the step" tf-plan.yml '          exit 0\n\n      # The image by DIGEST' '          [ "$nm" -eq 0 ]\n\n      # The image by DIGEST'
+mutate F5 $F "5. a failed fetch left its destination" "a failed fetch is moved into place anyway" tf-plan.yml 'rm -rf "$tmp"; missed=' 'mv "$tmp" "$d"; missed='
+mutate F6 $F "6. run 2 re-fetched" "a re-run fetches over present modules" tf-plan.yml '          [ -e "$d" ] && continue\n' ''
+echo "-- traversal (INFRA on #11)"
+mutate F7 $F "7. " "the component allow-list removed" tf-plan.yml 'if ! [[ $org =~ $seg && $repo =~ $seg && $ref =~ $seg ]]; then' 'if false; then'
+mutate F8 $F "7. " "the allow-list admits \".\" and \"..\"" tf-plan.yml "seg='^[A-Za-z0-9][A-Za-z0-9_.-]*\$'" "seg='^[A-Za-z0-9_.-]+\$'"
+mutate F9 $F "7. the step removes something other than" "425f34b's shape: rm -rf of the module-built path on a failure" tf-plan.yml 'rm -rf "$tmp"; missed=' 'rm -rf "$tmp" "$d"; missed='
+mutate F10 $F "8. the SHA-pinned module was not fetched" "425f34b's clone -b (a commit SHA can't be fetched)" tf-plan.yml \
+  '          if GIT_LFS_SKIP_SMUDGE=1 git -C "$tmp" -c core.hooksPath=/dev/null init -q \\\n' '          if rmdir "$tmp" && git clone -q --depth 1 -b "$ref" "https://github.com/$org/$repo.git" "$tmp" && false \\\n'
+mutate F11 $F "9. no warning for the registry source" "sources it doesn't fetch go unreported (blind, silently)" tf-plan.yml \
+  '      blind="$blind $src"' '      :'
+mutate F12 $F "9. a PROVIDER source (required_providers) was reported as a module" "every source = line is read, providers included" tf-plan.yml \
+  '              inmod {\n' '              1 {\n'
 
 echo "ran $ran (expected $EXPECTED), killed $killed, harness defects $bad"
 [ "$ran" -eq "$EXPECTED" ] && [ "$bad" -eq 0 ] && [ "$killed" -eq "$ran" ] || exit 1

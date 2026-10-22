@@ -154,41 +154,84 @@ jobs:
       # NO token, NO network and the working directory mounted READ-ONLY (PROOF on #11:
       # the third-party action handed GITHUB_PAT and the tokenised clones to an image
       # behind a mutable tag). Clones keep no .git, so no remote URL survives. A module
-      # that can't be fetched is a ::warning (checkov is blind to it), never a failure.
+      # it can't fetch, a source it doesn't fetch (the registry, ../ out of the mount)
+      # and a source it REFUSES are each a ::warning naming it, never a failure.
+      # tests/checkov-fetch.sh runs these bytes against fixture stacks.
       - name: Fetch modules for checkov
         id: checkov-modules
         working-directory: ${{ inputs.working_directory }}
         continue-on-error: true
         run: |
           set -uo pipefail
-          # Each git::https://github.com/<org>/<repo>[//sub]?ref=<ref> source, from the root
-          # .tf and (recursively) from fetched modules outside their examples/ and tests/,
-          # cloned the way checkov lays modules out: .external_modules/github.com/<org>/<repo>/<ref>
-          # (the whole repo; checkov resolves //sub itself). .git is removed from every clone.
-          re='source[[:space:]]*=[[:space:]]*"git::https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)(//[^"?]*)?\?ref=([A-Za-z0-9_.-]+)"'
-          tried=" " fetched=0 missed=""
+          # The stack's module sources, and (recursively) those of the modules fetched, outside
+          # their examples/ and tests/, laid out the way checkov reads them:
+          #   .external_modules/github.com/<org>/<repo>/<ref>   (the repo; checkov resolves //sub)
+          # 🔴 A fetched module's sources are THIRD-PARTY input (INFRA on #11: "../..?ref=main.tf"
+          # resolved to the stack's own main.tf, and a failed clone rm -rf'd it). So: org, repo
+          # and ref must each be ONE allow-listed path component (never "", "." or ".."); every
+          # fetch goes into a fresh mktemp dir under the root; the destination's parent must
+          # resolve (pwd -P) under the root before the move; and nothing built from module input
+          # is ever removed. Fetch by ref, so a commit SHA works too. No hooks, no LFS smudge.
+          R="$(pwd -P)/.external_modules"; mkdir -p "$R"
+          seg='^[A-Za-z0-9][A-Za-z0-9_.-]*$'
+          git_re='^git::https://github\.com/([^/?]+)/([^/?]+)(//[^?]*)?\?ref=([^&]+)$'
+          fetched=0 missed="" refused="" blind="" tried=" "
+          # One "<tag> <source>" line per `source = "..."` INSIDE a module block (a provider's
+          # required_providers source, e.g. "hashicorp/aws", is not a module).
+          sources() {  # <tag> <files...>
+            local tag="$1"; shift
+            awk -v tag="$tag" '
+              !inmod && /^[[:space:]]*module[[:space:]]+"[^"]*"[[:space:]]*\{/ { inmod = 1; depth = 0 }
+              inmod {
+                if (match($0, /^[[:space:]]*source[[:space:]]*=[[:space:]]*"[^"]*"/)) {
+                  v = substr($0, RSTART, RLENGTH); sub(/^[^"]*"/, "", v); sub(/"$/, "", v); print tag, v
+                }
+                n = split($0, c, ""); for (i = 1; i <= n; i++) { if (c[i] == "{") depth++; else if (c[i] == "}") depth-- }
+                if (depth <= 0) inmod = 0
+              }' "$@" 2>/dev/null
+          }
           for _ in 1 2 3 4 5 6; do
             new=0
-            while IFS= read -r line; do
-              [[ $line =~ $re ]] || continue
-              org=${BASH_REMATCH[1]} repo=${BASH_REMATCH[2]%.git} ref=${BASH_REMATCH[4]}
-              key="$org/$repo/$ref"
-              case "$tried" in *" $key "*) continue ;; esac
-              tried="$tried$key " new=1
-              d=".external_modules/github.com/$key"
-              [ -d "$d" ] && continue   # already laid out (a re-run): never clone over it
-              if git clone -q --depth 1 -b "$ref" "https://github.com/$org/$repo.git" "$d" >/dev/null 2>&1; then
-                rm -rf "$d/.git"; fetched=$((fetched + 1))
+            while read -r tag src; do
+              case "$tried" in *" $tag:$src "*) continue ;; esac
+              tried="$tried$tag:$src " new=1
+              if [[ $src =~ $git_re ]]; then
+                org=${BASH_REMATCH[1]} repo=${BASH_REMATCH[2]%.git} ref=${BASH_REMATCH[4]}
+                if ! [[ $org =~ $seg && $repo =~ $seg && $ref =~ $seg ]]; then
+                  refused="$refused $src"; continue
+                fi
+                d="$R/github.com/$org/$repo/$ref"
+                [ -e "$d" ] && continue
+                mkdir -p "${d%/*}"
+                case "$(cd "${d%/*}" && pwd -P)/" in "$R"/*) ;; *) refused="$refused $src"; continue ;; esac
+                tmp="$(mktemp -d "$R/.fetch.XXXXXX")"
+                if GIT_LFS_SKIP_SMUDGE=1 git -C "$tmp" -c core.hooksPath=/dev/null init -q \
+                   && GIT_LFS_SKIP_SMUDGE=1 git -C "$tmp" -c core.hooksPath=/dev/null fetch -q --depth 1 "https://github.com/$org/$repo.git" "$ref" \
+                   && GIT_LFS_SKIP_SMUDGE=1 git -C "$tmp" -c core.hooksPath=/dev/null checkout -q FETCH_HEAD; then
+                  rm -rf "$tmp/.git"; mv "$tmp" "$d"; fetched=$((fetched + 1))
+                else
+                  rm -rf "$tmp"; missed="$missed github.com/$org/$repo/$ref"
+                fi
+              elif [[ $src == ./* || ( $tag == mod && $src == ../* ) ]]; then
+                :   # inside the mount: checkov scans it in place
               else
-                rm -rf "$d"; missed="$missed github.com/$key"
+                blind="$blind $src"   # the registry, another host, ssh, no ref, or ../ out of the mount
               fi
-            done < <(cat ./*.tf 2>/dev/null; find .external_modules -name '*.tf' -not -path '*/examples/*' -not -path '*/tests/*' -exec cat {} + 2>/dev/null)
+            done < <(sources root ./*.tf
+                     find "$R" -name '*.tf' -not -path '*/examples/*' -not -path '*/tests/*' -not -path "$R/.fetch.*" \
+                       | while IFS= read -r f; do sources mod "$f"; done)
             [ "$new" -eq 1 ] || break
           done
-          # shellcheck disable=SC2086  # deliberate: one word per missed module
-          set -- $missed
-          echo "checkov modules: ${fetched} fetched, $# not fetched"
+          # shellcheck disable=SC2086  # deliberate: one word per entry
+          set -- $missed; nm=$#
           for m in "$@"; do echo "::warning title=checkov is blind to a module::${m} could not be fetched; checkov will not scan it"; done
+          # shellcheck disable=SC2086
+          set -- $blind; nb=$#
+          for m in "$@"; do echo "::warning title=checkov is blind to a module::${m} is not a source this step fetches; checkov will not scan it"; done
+          # shellcheck disable=SC2086
+          set -- $refused; nr=$#
+          for m in "$@"; do echo "::warning title=checkov refused a module source::${m} is not one safe path component per org, repo and ref; not fetched"; done
+          echo "checkov modules: ${fetched} fetched, $((nm + nb)) not fetched, ${nr} refused"
           exit 0
 
       # The image by DIGEST (checkov 3.3.29, the multi-arch index), not the action:
