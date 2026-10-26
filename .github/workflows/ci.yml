@@ -57,5 +57,18 @@ jobs:
       - name: tests/environment-input.sh
         run: tests/environment-input.sh
 
+      # FB-08 + PROOF on #11: checkov must SEE the modules (our own fetch step), must
+      # never HOLD a credential (no action, no token, no network, read-only, by digest),
+      # and must still not gate. Static, on the parsed workflows; then the fetch step's
+      # own bytes against fixture stacks with a stub git.
+      - name: tests/checkov-sees-modules.sh
+        run: tests/checkov-sees-modules.sh
+
+      - name: tests/checkov-fetch.sh
+        run: tests/checkov-fetch.sh
+
+      - name: tests/mutate-checkov.sh
+        run: tests/mutate-checkov.sh
+
       - name: Shellcheck the test scripts
         run: shellcheck tests/*.sh

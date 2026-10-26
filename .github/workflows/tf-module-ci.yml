@@ -80,14 +80,18 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
         continue-on-error: true
 
+      # The image by DIGEST (checkov 3.3.29), not checkov-action@v12.1347.0 (2022,
+      # checkov 2.0.930, which parsed tf-aws-wireguard to zero resources). The module's
+      # own files only: no token, --network none, mounted read-only. REPORT-ONLY:
+      # --soft-fail and continue-on-error. tests/checkov-sees-modules.sh pins the bytes.
       - name: Checkov Scan
         id: checkov
-        uses: bridgecrewio/checkov-action@v12.1347.0
-        with:
-          directory: ${{ inputs.working_directory }}
-          framework: terraform
-          soft_fail: true
-          output_format: cli
+        working-directory: ${{ inputs.working_directory }}
+        continue-on-error: true
+        run: |
+          docker run --rm --network none -v "$PWD:/tf:ro" -w /tf \
+            ghcr.io/bridgecrewio/checkov@sha256:3cc125b5337717b7303dbddd4e79374c120687b5ff6a24f9abdad56b562469f3 \
+            -d /tf --framework terraform --soft-fail -o cli
 
       - name: Terraform Init
         run: terraform init -input=false -backend=false
