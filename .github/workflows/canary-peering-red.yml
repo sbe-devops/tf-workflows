@@ -1,0 +1,27 @@
+name: canary-peering-red
+
+# CANARY, never merge. Does tf-module-ci@v0.11.0 turn RED on a failing
+# terraform test? requester has ONE assertion inverted; accepter is the
+# unmodified control and must stay green.
+on:
+  push:
+    branches: [canary/peering-test-red]
+
+jobs:
+  broken-requester:
+    name: Validate (requester, one assert inverted)
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: sbe-devops/tf-workflows/.github/workflows/tf-module-ci.yml@v0.11.0
+    with:
+      working_directory: canary-peering/modules/requester
+
+  control-accepter:
+    name: Validate (accepter, unmodified)
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: sbe-devops/tf-workflows/.github/workflows/tf-module-ci.yml@v0.11.0
+    with:
+      working_directory: canary-peering/modules/accepter
