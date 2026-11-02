@@ -13,6 +13,21 @@ on:
         required: false
         type: string
         default: "."
+      # Only `terraform init` and `terraform validate` run here; fmt, tflint,
+      # checkov and `terraform test` stay at working_directory. Relative to
+      # working_directory.
+      #
+      # 🔑 FOR A MODULE THAT DECLARES `configuration_aliases`. Validate at such a
+      # root fails with "Provider configuration not present", because only a
+      # caller can supply an aliased provider (tf-aws-static-site's aws.us_east_1,
+      # 2026-11-02). Point this at an example that configures the alias and calls
+      # the module. Validate checks the module through it, child modules included.
+      # The step after init refuses a directory that does not load the module.
+      validate_directory:
+        description: "Where init and validate run, relative to working_directory (e.g. examples/basic for a module with provider aliases)"
+        required: false
+        type: string
+        default: "."
       terraform_version:
         description: "Terraform version"
         required: false
@@ -95,12 +110,57 @@ jobs:
 
       - name: Terraform Init
         run: terraform init -input=false -backend=false
-        working-directory: ${{ inputs.working_directory }}
+        working-directory: ${{ inputs.working_directory }}/${{ inputs.validate_directory }}
+
+      # 🔴 VALIDATING A DIRECTORY THAT DOES NOT LOAD THE MODULE VALIDATES NOTHING
+      # OF IT. A typo'd or stale validate_directory that still holds valid
+      # Terraform would pass green while never reading the module's code, which
+      # is a check that cannot fail. So when validation runs anywhere but the
+      # module root, init's module manifest must list the module root itself.
+      - name: Assert validate loads the module
+        env:
+          MODULE_ROOT: ${{ github.workspace }}/${{ inputs.working_directory }}
+          VALIDATE_DIRECTORY: ${{ inputs.validate_directory }}
+        run: |
+          # >>> LOADS MODULE BEGIN
+          set -euo pipefail
+
+          fail() {
+            echo "::error title=validate_directory does not load the module::$1"
+            exit 1
+          }
+
+          root="$(cd "$MODULE_ROOT" && pwd -P)"
+          here="$(pwd -P)"
+          if [ "$here" = "$root" ]; then
+            echo "validating the module root itself"
+            exit 0
+          fi
+
+          # terraform writes the manifest only when the configuration calls a
+          # module, so its absence means this directory calls none.
+          manifest=.terraform/modules/modules.json
+          [ -f "$manifest" ] || fail "validate_directory '$VALIDATE_DIRECTORY' calls no module, so validating it would check nothing of the module at $root."
+
+          # Each entry's Dir is relative to this directory: "." for itself, the
+          # source path for a local call, .terraform/modules/<key> for a remote one.
+          found=0
+          while IFS= read -r dir; do
+            [ -d "$dir" ] || continue
+            if [ "$(cd "$dir" && pwd -P)" = "$root" ]; then
+              found=1
+            fi
+          done < <(grep -o '"Dir":"[^"]*"' "$manifest" | sed 's/^"Dir":"//; s/"$//')
+
+          [ "$found" -eq 1 ] || fail "validate_directory '$VALIDATE_DIRECTORY' does not call the module at $root (its module manifest lists no Dir resolving there), so validating it would check nothing of the module."
+          echo "validate_directory '$VALIDATE_DIRECTORY' loads the module at $root"
+          # <<< LOADS MODULE END
+        working-directory: ${{ inputs.working_directory }}/${{ inputs.validate_directory }}
 
       - name: Terraform Validate
         id: validate
         run: terraform validate -no-color
-        working-directory: ${{ inputs.working_directory }}
+        working-directory: ${{ inputs.working_directory }}/${{ inputs.validate_directory }}
 
       # ── `terraform test`, when the module ships tests ────────────────────────
       #
@@ -216,6 +276,8 @@ jobs:
       - name: Post Results to PR
         uses: actions/github-script@v7
         if: github.event_name == 'pull_request'
+        env:
+          VALIDATE_DIRECTORY: ${{ inputs.validate_directory }}
         with:
           script: |
             const fmt      = '${{ steps.fmt.outcome }}';
@@ -229,6 +291,12 @@ jobs:
             // that as ❌ would read as a failure, and rendering it as ✅ would
             // read as coverage. It is neither.
             const runs     = '${{ steps.tftest_runs.outcome }}';
+
+            // Say where validate ran when it was not the module root, so a green
+            // row is never read as "validated at the root". Read from env, not
+            // interpolated, so a quote in the path cannot break the script.
+            const validateDir = process.env.VALIDATE_DIRECTORY;
+            const validateAt  = validateDir === '.' ? '' : ` (via \`${validateDir}\`)`;
 
             // Three states, not two. A skipped step means the module ships no
             // tests; a failed runs-assertion means it ships tests terraform did
@@ -246,7 +314,7 @@ jobs:
               `|-------|--------|`,
               `| Format   | ${icon(fmt)} \`${fmt}\` |`,
               `| TFLint   | ${icon(tflint)} \`${tflint}\` |`,
-              `| Validate | ${icon(validate)} \`${validate}\` |`,
+              `| Validate | ${icon(validate)} \`${validate}\`${validateAt} |`,
               testRow,
             ].join('\n');
 

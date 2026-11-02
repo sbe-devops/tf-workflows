@@ -142,13 +142,27 @@ isolation — **no backend, no state, no AWS credentials**:
 | `terraform fmt -check -recursive` | 🔴 **fails the job** |
 | TFLint | reported only — see *Known gaps* in the CHANGELOG |
 | Checkov | reported only (`soft_fail: true`) |
-| `terraform init -backend=false` | 🔴 fails the job |
-| `terraform validate` | 🔴 **fails the job** |
+| `terraform init -backend=false` *(in `validate_directory`)* | 🔴 fails the job |
+| the module is loaded *(only when `validate_directory` isn't the root)* | 🔴 fails the job |
+| `terraform validate` *(in `validate_directory`)* | 🔴 **fails the job** |
 | `terraform test` *(only when `*.tftest.hcl` exists)* | 🔴 **fails the job** |
 
-**`terraform test` is auto-detected**, not opt-in: `find . -maxdepth 2 -name '*.tftest.hcl'` covers the
-module root and the default `tests/` directory. A module with no tests **skips** the step and is
-unaffected — the PR comment shows `⏭️ no *.tftest.hcl`, which is neither a pass nor a failure.
+**`terraform test` is auto-detected**, not opt-in: a `*.tftest.hcl` or `*.tftest.json` file at any depth
+means the module intends to have tests, and a run that then executes zero of them fails. A module with no
+tests **skips** the step and is unaffected. The PR comment shows `⏭️ no *.tftest.{hcl,json}`, which is
+neither a pass nor a failure.
+
+**A module that declares provider `configuration_aliases`** can't be validated at its root: only a
+caller can supply an aliased provider, so validate fails with *"Provider configuration not present"*.
+Set `validate_directory` to an example that configures the alias and calls the module. Only `init` and
+`validate` run there. fmt, tflint, checkov and the tests stay at the module root. The job fails if that
+directory doesn't load the module.
+
+```yaml
+    uses: sbe-devops/tf-workflows/.github/workflows/tf-module-ci.yml@v0.13.0
+    with:
+      validate_directory: examples/basic   # tf-aws-static-site: aws.us_east_1
+```
 
 > ⚠️ **It is the only step that reaches two things the others cannot.** A variable `validation` block
 > fires at **plan** time with real values, so `terraform validate` never exercises a module's input
@@ -326,6 +340,7 @@ difference between a list a reviewer approved and a list the dispatcher wrote.*
 | `tf-destroy.yml` | `environment` | `string` | no | `""` | GitHub Environment for the destroy job, for a required-reviewer gate. **Declared here because `environment:` is not valid on a `uses:` job.** Empty means no environment and **no gate** |
 | `tf-destroy.yml` | `app_id` | `string` | no | `""` | GitHub App ID for reading private `sbe-devops` module repos. Pass via `with:` using `vars.SBE_DEVOPS_APP_ID` |
 | `tf-module-ci.yml` | `working_directory` | `string` | yes | — | Path to the module (relative to the repo root) |
+| `tf-module-ci.yml` | `validate_directory` | `string` | no | `.` | Where `init` and `validate` run, relative to `working_directory`. For a module with provider aliases, an example that calls it (e.g. `examples/basic`) |
 | `tf-module-ci.yml` | `terraform_version` | `string` | no | `latest` | Terraform version for `hashicorp/setup-terraform` |
 | `tf-module-ci.yml` | `tflint_version` | `string` | no | `latest` | TFLint version for `terraform-linters/setup-tflint` |
 
