@@ -1,31 +1,76 @@
-name-template: "v$NEXT_PATCH_VERSION"
-tag-template: "v$NEXT_PATCH_VERSION"
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
+
+# SemVer per standards/github-actions.md. Release Drafter resolves the next version
+# from PR LABELS — which is why the autolabeler at the bottom of this file exists.
+# Without it every PR falls through to `default: patch`, and the drafted version is
+# wrong the moment anything more than a fix lands. That is not hypothetical: in helm-kustomize, the
+# breaking `feat!:` kubeconform change drafted v0.3.3 and had to be published by hand
+# as v0.4.0 (2026-08-11).
 
 categories:
-  - title: "Breaking Changes"
+  - title: "💥 Breaking Changes"
     labels: ["breaking"]
-  - title: "Features"
+  - title: "🚀 Features"
     labels: ["feature", "enhancement"]
-  - title: "Bug Fixes"
+  - title: "🐛 Bug Fixes"
     labels: ["bug", "fix"]
-  - title: "Maintenance"
+  - title: "📦 Build & CI"
+    labels: ["build", "ci"]
+  - title: "🔧 Maintenance"
     labels: ["maintenance", "chore", "dependencies"]
 
 change-template: "- $TITLE @$AUTHOR (#$NUMBER)"
 change-title-escapes: '\<*_&'
 
+# ⚠️ PRE-1.0 MAPPING — a breaking change bumps the MINOR, not the major.
+# 0.3.2 -> 0.4.0, never 1.0.0. That matches how this repo has actually been
+# released and what SemVer says about 0.x.
+#
+# `major:` is deliberately absent. Leaving it as ["breaking"] meant one labelled PR
+# could silently draft v1.0.0 — declaring the repo stable as a side effect of
+# labelling. Going 1.0.0 is a deliberate act; make it by hand.
+#
+# AT v1.0.0: move "breaking" from `minor:` into a new `major:` block.
 version-resolver:
-  major:
-    labels: ["breaking"]
   minor:
-    labels: ["feature", "enhancement"]
+    labels: ["breaking", "feature", "enhancement"]
   patch:
-    labels: ["bug", "fix", "maintenance", "chore", "dependencies"]
+    labels: ["bug", "fix", "build", "ci", "maintenance", "chore", "dependencies"]
   default: patch
+
+# Labels come from the PR TITLE, which we already write as conventional commits — so
+# the version resolves correctly without anyone remembering to label anything. A
+# scheme that depends on human labelling is a scheme that silently defaults to patch.
+#
+# `!` anywhere in the type/scope marks a breaking change (feat!:, fix(api)!:) and is
+# matched first.
+# VERIFY AFTER MERGE: open the next PR with a conventional-commit title and confirm the
+# label lands. `title` MUST be a LIST — a scalar parses fine and silently matches nothing,
+# which is how this shipped broken once (container-workflows v0.10.3, 2026-08-12).
+autolabeler:
+  - label: "breaking"
+    title:
+      - '/^[a-z]+(\(.+\))?!:/'
+  - label: "feature"
+    title:
+      - '/^feat(\(.+\))?:/'
+  - label: "fix"
+    title:
+      - '/^fix(\(.+\))?:/'
+  - label: "ci"
+    title:
+      - '/^(ci|build)(\(.+\))?:/'
+  - label: "maintenance"
+    title:
+      - '/^(chore|refactor|docs|test|style|perf)(\(.+\))?:/'
+  - label: "dependencies"
+    title:
+      - '/^deps(\(.+\))?:/'
 
 template: |
   ## What's Changed
 
   $CHANGES
 
-  **Full Changelog**: $PREVIOUS_TAG...https://github.com/sbe-devops/tf-workflows/compare/$PREVIOUS_TAG..$RESOLVED_VERSION
+  **Full Changelog**: https://github.com/sbe-devops/tf-workflows/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
