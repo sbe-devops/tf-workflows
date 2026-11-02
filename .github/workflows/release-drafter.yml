@@ -1,25 +1,64 @@
 name: Release Drafter
 
+# TWO DISTINCT JOBS, gated by event — per standards/github-actions.md,
+# "CI is pre-merge. CD is post-merge. No job runs on both."
+#
+# ⚠️ In release-drafter v7 the autolabeler is a SEPARATE ACTION
+# (`release-drafter/release-drafter/autolabeler@v7`). The main action drafts
+# releases and does NOT apply labels. We ran only the main action, so the
+# `autolabeler:` block in .github/release-drafter.yml was parsed and ignored —
+# which is why no PR was ever labelled and every version fell through to
+# `default: patch`, even once the config itself was correct.
+#
+# Two earlier fixes (title-as-a-list, tag-template) were real defects but
+# neither was the cause. Confirmed 2026-08-13 from the run log:
+#   Config fetched from ".../release-drafter.yml@refs/pull/6/merge"
+#   refs/pull/6/merge points to an ephemeral merge commit; forcing dry-run
+# The config was read fine. Nothing was ever asked to apply a label.
+
 on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, reopened, synchronize]
+    # The autolabeler reads the PR TITLE, so `edited` matters and `synchronize`
+    # does not — a push does not change the title. Dropping `synchronize` also
+    # stops a four-commit PR queueing four runs.
+    types: [opened, reopened, edited]
 
 permissions:
   contents: read
 
 jobs:
+  # Post-merge: update the draft from what actually landed on main.
+  # Deliberately NOT run on pull_request — there it fetched config from the
+  # ephemeral merge ref, forced dry-run, and posted a pending check that gated
+  # the merge while validating nothing.
   update_release_draft:
     name: Update release draft
+    if: github.event_name == 'push'
     permissions:
       contents: write
-      pull-requests: write
-    runs-on: ubuntu-latest
-    # Hang protection — one API call.
-    # Without this a stuck job runs to GitHub's 360-minute default.
+      # READ, not write: the drafter lists the merged PRs to build the notes. On a
+      # private repo that needs the scope (release-drafter v7 README; PROOF on #10).
+      pull-requests: read
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     steps:
-      - uses: release-drafter/release-drafter@v6
+      - uses: release-drafter/release-drafter@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Pre-merge: apply labels from the conventional-commit PR title so the
+  # version-resolver has something to resolve. Fast — one API call, no checkout.
+  autolabel:
+    name: Autolabel PR
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - uses: release-drafter/release-drafter/autolabeler@v7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
