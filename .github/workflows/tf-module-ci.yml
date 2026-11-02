@@ -13,9 +13,9 @@ on:
         required: false
         type: string
         default: "."
-      # Only `terraform init` and `terraform validate` run here; fmt, tflint,
-      # checkov and `terraform test` stay at working_directory. Relative to
-      # working_directory.
+      # Only `terraform validate` (and an init for it) runs here; fmt, tflint,
+      # checkov and `terraform test` stay at working_directory, which is always
+      # initialised too. Relative to working_directory.
       #
       # 🔑 FOR A MODULE THAT DECLARES `configuration_aliases`. Validate at such a
       # root fails with "Provider configuration not present", because only a
@@ -24,7 +24,7 @@ on:
       # the module. Validate checks the module through it, child modules included.
       # The step after init refuses a directory that does not load the module.
       validate_directory:
-        description: "Where init and validate run, relative to working_directory (e.g. examples/basic for a module with provider aliases)"
+        description: "Where validate runs (with its own init), relative to working_directory (e.g. examples/basic for a module with provider aliases)"
         required: false
         type: string
         default: "."
@@ -108,7 +108,17 @@ jobs:
             ghcr.io/bridgecrewio/checkov@sha256:3cc125b5337717b7303dbddd4e79374c120687b5ff6a24f9abdad56b562469f3 \
             -d /tf --framework terraform --soft-fail -o cli
 
+      # 🔑 THE ROOT IS ALWAYS INITIALISED, even when validation runs elsewhere:
+      # `terraform test` below runs at the root and needs its providers. With
+      # only the validate directory initialised, it failed "unknown provider"
+      # (PROOF on tf-workflows#13). Init at an aliased root succeeds; only
+      # validate there fails.
       - name: Terraform Init
+        run: terraform init -input=false -backend=false
+        working-directory: ${{ inputs.working_directory }}
+
+      - name: Terraform Init (validate_directory)
+        if: inputs.validate_directory != '.'
         run: terraform init -input=false -backend=false
         working-directory: ${{ inputs.working_directory }}/${{ inputs.validate_directory }}
 

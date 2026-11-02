@@ -52,8 +52,9 @@ jobs:
         run: tests/mutate-module-ci.sh
 
       # tf-module-ci.yml's validate_directory (tf-aws-static-site, 2026-11-02): only
-      # init and validate move, the default is ".", and the guard refuses a directory
-      # that does not load the module. Then 11 mutations, each required to turn it red.
+      # validate and its own init move (the root stays initialised for the tests), the
+      # default is ".", and the guard refuses a directory that does not load the
+      # module. Then 14 mutations, each required to turn it red.
       - name: tests/validate-directory.sh
         run: tests/validate-directory.sh
 
@@ -87,7 +88,8 @@ jobs:
   # The gates above read the workflow's text. These run it. `plain` is the shape 18
   # of the 19 tf-aws-* modules have, called WITHOUT validate_directory: the default
   # path end to end. `aliased` declares configuration_aliases, as tf-aws-static-site
-  # does, and is validated via its example.
+  # does, and is validated via its example. It also ships a `terraform test`, which
+  # runs at its ROOT: the case PROOF found failing "unknown provider" on #13.
   #
   # ⚠️ The reusable job asks for pull-requests: write (its results comment), and a
   # called job cannot hold more than its caller grants, so these grant it. On a PR

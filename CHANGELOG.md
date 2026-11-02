@@ -13,14 +13,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This re
 - **`tf-module-ci.yml`: an optional `validate_directory` input, for a module that declares provider `configuration_aliases`** (tf-aws-static-site#3, 2026-11-02).
   - **The problem:** `terraform validate` at such a module's root fails with *"Provider configuration not present"*, because only a caller can supply an aliased provider. `tf-aws-static-site` needs `aws.us_east_1` for its CloudFront certificate. It is the only one of the 19 `tf-aws-*` modules with an alias, so its PRs could never pass `Validate / Validate`.
   - **The fix:** set `validate_directory: examples/basic`, an example that configures the alias and calls the module. `terraform validate` checks the module through it, child modules included. Measured: a module error fails validate via the example.
-  - **Only `init` and `validate` move.** fmt, tflint, checkov and `terraform test` stay at `working_directory`, so they still read the module and not the example.
+  - **Only `validate` moves, with an init of its own** (`if: validate_directory != '.'`). fmt, tflint, checkov and `terraform test` stay at `working_directory`, so they still read the module and not the example. **The root's init stays too:** `terraform test` runs there, and without it the test step failed `unknown provider` (PROOF on #13).
   - **The default is `"."`. A consumer that doesn't set it runs the same commands in the same directory as before** (`<working_directory>/.`).
   - 🔴 **A new step, *Assert validate loads the module*, fails the job when `validate_directory` doesn't call the module.** Init's module manifest must list a `Dir` resolving to the module root. Without it, a typo'd or stale path holding valid Terraform would pass green having read none of the module. At the module root it passes without a manifest, which terraform doesn't write for a root that calls no module.
   - The PR comment's Validate row says `(via <dir>)` when it didn't run at the root.
   - **Tests:**
-    - `tests/validate-directory.sh` has 21 assertions: what moves and what stays, the default, the guard's order and hardness, and the guard's own bytes against 8 directory layouts.
-    - `tests/mutate-validate-directory.sh` has 11 mutations, all killed.
-    - `ci.yml` runs `tf-module-ci.yml` at the PR's head on two fixtures: `plain`, with the default, and `aliased`, via `examples/basic`. A third job proves the aliased fixture fails at its root, for the alias, and that a module error fails via its example.
+    - `tests/validate-directory.sh` has 23 assertions: what moves and what stays (the root init included), the default, the step order, the guard's hardness, and the guard's own bytes against 8 directory layouts.
+    - `tests/mutate-validate-directory.sh` has 14 mutations, all killed.
+    - `ci.yml` runs `tf-module-ci.yml` at the PR's head on two fixtures: `plain`, with the default, and `aliased`, via `examples/basic`. `aliased` ships a `terraform test`, so a test at a root validated elsewhere is exercised. A third job proves the aliased fixture fails at its root, for the alias, and that a module error fails via its example.
 
 ## [v0.12.0] - 2026-10-27
 

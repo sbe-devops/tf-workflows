@@ -3,10 +3,11 @@
 # tests/validate-directory.sh — tf-module-ci.yml's `validate_directory` input.
 #
 # 🔑 TWO PROPERTIES, and both are about not changing what the other consumers get:
-#   · WIRING (static): only init, the loads-module guard and validate move to
-#     <working_directory>/<validate_directory>. fmt, tflint, checkov and the test
-#     steps stay at the module root, and the default is "." — so for the 18
-#     consumers that never set it, `<wd>/.` is the same directory as before.
+#   · WIRING (static): only validate, its own init and the loads-module guard
+#     run in <working_directory>/<validate_directory>. The root is ALWAYS
+#     initialised (`terraform test` runs there; PROOF on #13), and fmt, tflint,
+#     checkov and the test steps stay there. The default is "." — so for the 18
+#     consumers that never set it, the same commands run in the same directory.
 #   · THE GUARD (its own bytes, against directory fixtures): a validate_directory
 #     that does not load the module must FAIL, or validate goes green having read
 #     none of the module's code.
@@ -74,7 +75,7 @@ else
     "any other default moves validation for every consumer that never set the input"
 fi
 
-for step in "Terraform Init" "Assert validate loads the module" "Terraform Validate"; do
+for step in "Terraform Init (validate_directory)" "Assert validate loads the module" "Terraform Validate"; do
   got="$(step_dir "$step")"
   if [ "$got" = "$validate_dir" ]; then
     ok "'$step' runs in <working_directory>/<validate_directory>"
@@ -86,8 +87,11 @@ done
 # The module's own code is what these read. Moved to an example, fmt and tflint
 # would check the example, checkov would scan the example, and the tests would
 # never be found.
+# 🔴 "Terraform Init" is in this list because `terraform test` runs at the root
+# and needs its providers: moved to the validate directory, the test step failed
+# "unknown provider" (PROOF on #13).
 for step in "Terraform Format Check" "TFLint Init" "TFLint" "Checkov Scan" \
-            "Detect Terraform tests" "Terraform Test"; do
+            "Terraform Init" "Detect Terraform tests" "Terraform Test"; do
   got="$(step_dir "$step")"
   if [ "$got" = "$root_dir" ]; then
     ok "'$step' stays at <working_directory>"
@@ -96,13 +100,25 @@ for step in "Terraform Format Check" "TFLint Init" "TFLint" "Checkov Scan" \
   fi
 done
 
+# The validate directory's own init is skipped at the default, where the root
+# init already covers it.
+if step_has "Terraform Init (validate_directory)" "^        if: inputs\.validate_directory != '\.'\$"; then
+  ok "the validate directory's init runs only when it is not the root"
+else
+  bad "the validate directory's init runs only when it is not the root" \
+    "want: if: inputs.validate_directory != '.'"
+fi
+
 init="$(step_line "Terraform Init")"
+vinit="$(step_line "Terraform Init (validate_directory)")"
 guard="$(step_line "Assert validate loads the module")"
 validate="$(step_line "Terraform Validate")"
-if [ -n "$init" ] && [ -n "$guard" ] && [ -n "$validate" ] && [ "$init" -lt "$guard" ] && [ "$guard" -lt "$validate" ]; then
-  ok "the guard runs after init (it reads init's manifest) and before validate"
+tftest="$(step_line "Terraform Test")"
+if [ -n "$init" ] && [ -n "$vinit" ] && [ -n "$guard" ] && [ -n "$validate" ] && [ -n "$tftest" ] \
+   && [ "$init" -lt "$tftest" ] && [ "$vinit" -lt "$guard" ] && [ "$guard" -lt "$validate" ]; then
+  ok "root init precedes the tests; validate-dir init precedes the guard (it reads init's manifest), which precedes validate"
 else
-  bad "the guard runs after init and before validate" "init=${init:-?} guard=${guard:-?} validate=${validate:-?}"
+  bad "step order" "init=${init:-?} vinit=${vinit:-?} guard=${guard:-?} validate=${validate:-?} test=${tftest:-?}"
 fi
 
 if step_has "Assert validate loads the module" '^        continue-on-error:'; then

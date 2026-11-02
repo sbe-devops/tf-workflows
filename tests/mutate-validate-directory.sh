@@ -63,9 +63,21 @@ mutate "V1 · the default moves off the module root" \
   's/(      validate_directory:\n(?:        .*\n)*?        default: )"\."/$1"examples\/basic"/' \
   "every consumer that never set the input would validate an example it may not have"
 
-mutate "V2 · init stays at the root" \
-  's/(- name: Terraform Init\n.*\n        working-directory: \$\{\{ inputs\.working_directory \}\})\/\$\{\{ inputs\.validate_directory \}\}/$1/' \
+mutate "V2 · the validate directory's init runs at the root" \
+  's/(- name: Terraform Init \(validate_directory\)\n.*\n.*\n        working-directory: \$\{\{ inputs\.working_directory \}\})\/\$\{\{ inputs\.validate_directory \}\}/$1/' \
   "validate would run in a directory nothing was initialised in"
+
+mutate "V2b · the root init moves to the validate directory (PROOF on #13)" \
+  's/(      - name: Terraform Init\n        run: .*\n        working-directory: \$\{\{ inputs\.working_directory \}\})\n/$1\/\$\{\{ inputs.validate_directory \}\}\n/' \
+  "terraform test runs at the root and fails \"unknown provider\" when nothing initialised it"
+
+mutate "V2c · the validate directory's init is dropped" \
+  's/      - name: Terraform Init \(validate_directory\)\n(?:        .*\n)*\n//' \
+  "validate would run in an uninitialised example"
+
+mutate "V2d · the validate directory's init loses its condition" \
+  "s/        if: inputs\\.validate_directory != '\\.'\\n(        run: terraform init)/\$1/" \
+  "at the default it would init the root a second time"
 
 mutate "V3 · validate stays at the root" \
   's/(- name: Terraform Validate\n.*\n.*\n        working-directory: \$\{\{ inputs\.working_directory \}\})\/\$\{\{ inputs\.validate_directory \}\}/$1/' \
