@@ -51,6 +51,16 @@ jobs:
       - name: tests/mutate-module-ci.sh
         run: tests/mutate-module-ci.sh
 
+      # tf-module-ci.yml's validate_directory (tf-aws-static-site, 2026-11-02): only
+      # validate and its own init move (the root stays initialised for the tests), the
+      # default is ".", and the guard refuses a directory that does not load the
+      # module. Then 14 mutations, each required to turn it red.
+      - name: tests/validate-directory.sh
+        run: tests/validate-directory.sh
+
+      - name: tests/mutate-validate-directory.sh
+        run: tests/mutate-validate-directory.sh
+
       # The environment-input wiring (tf-workflows#8): ADR-0046 A4.1 needs the
       # job to run in a GitHub Environment, which is a property of the job's
       # DEFINITION, so these are static assertions rather than a run.
@@ -72,3 +82,77 @@ jobs:
 
       - name: Shellcheck the test scripts
         run: shellcheck tests/*.sh
+
+  # ── tf-module-ci.yml itself, at this PR's head, on two fixture modules ───────────────
+  #
+  # The gates above read the workflow's text. These run it. `plain` is the shape 18
+  # of the 19 tf-aws-* modules have, called WITHOUT validate_directory: the default
+  # path end to end. `aliased` declares configuration_aliases, as tf-aws-static-site
+  # does, and is validated via its example. It also ships a `terraform test`, which
+  # runs at its ROOT: the case PROOF found failing "unknown provider" on #13.
+  #
+  # ⚠️ The reusable job asks for pull-requests: write (its results comment), and a
+  # called job cannot hold more than its caller grants, so these grant it. On a PR
+  # each posts its results table, which is that comment's own check.
+  module-ci-plain:
+    name: tf-module-ci · plain module, default validate_directory
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/tf-module-ci.yml
+    with:
+      working_directory: tests/fixtures/module-ci/plain
+
+  module-ci-aliased:
+    name: tf-module-ci · aliased module via examples/basic
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/tf-module-ci.yml
+    with:
+      working_directory: tests/fixtures/module-ci/aliased
+      validate_directory: examples/basic
+
+  # 🔑 THE FIXTURE MUST NEED THE INPUT, and validating via the example must still
+  # read the module. Without these, `module-ci-aliased` going green proves nothing:
+  # the fixture might validate at its root anyway, or the example might not load it.
+  aliased-fixture-is-real:
+    name: aliased fixture fails at its root; a module error fails via the example
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TF_INPUT: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Validate at the aliased module's root FAILS, for the alias
+        working-directory: tests/fixtures/module-ci/aliased
+        run: |
+          terraform init -input=false -backend=false >/dev/null
+          if terraform validate -no-color > "$RUNNER_TEMP/root.out" 2>&1; then
+            cat "$RUNNER_TEMP/root.out"
+            echo "::error::the aliased fixture validates at its root, so it does not reproduce the case validate_directory exists for"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/root.out"
+          grep -qF 'Provider configuration not present' "$RUNNER_TEMP/root.out" \
+            || { echo "::error::validate failed at the root, but not for the missing aliased provider"; exit 1; }
+
+      - name: A broken module FAILS validate via its example
+        working-directory: tests/fixtures/module-ci/aliased
+        run: |
+          printf '\noutput "broken" {\n  value = var.does_not_exist\n}\n' >> main.tf
+          cd examples/basic
+          terraform init -input=false -backend=false >/dev/null
+          if terraform validate -no-color > "$RUNNER_TEMP/example.out" 2>&1; then
+            cat "$RUNNER_TEMP/example.out"
+            echo "::error::a module error passed validate via the example, so validating there does not check the module"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/example.out"
+          grep -qF 'Reference to undeclared input variable' "$RUNNER_TEMP/example.out" \
+            || { echo "::error::validate failed via the example, but not for the module's error"; exit 1; }
