@@ -51,6 +51,11 @@ jobs:
       - name: tests/mutate-module-ci.sh
         run: tests/mutate-module-ci.sh
 
+      # The results comments (tf-module-ci, tf-plan) are reports, never gates: each must be
+      # continue-on-error and retried. Derived from the workflows, with 7 mutants.
+      - name: tests/comment-step-guard.sh
+        run: tests/comment-step-guard.sh
+
       # tf-module-ci.yml's validate_directory (tf-aws-static-site, 2026-11-02): only
       # validate and its own init move (the root stays initialised for the tests), the
       # default is ".", and the guard refuses a directory that does not load the
