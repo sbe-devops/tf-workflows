@@ -51,6 +51,13 @@ jobs:
       - name: tests/mutate-module-ci.sh
         run: tests/mutate-module-ci.sh
 
+      # No ${{ }} inside any run: block (the module token reached script source until
+      # 2026-11-14). Its own fixtures first, then every workflow here.
+      - name: tests/no-expr-in-run.sh --self-test
+        run: tests/no-expr-in-run.sh --self-test
+      - name: tests/no-expr-in-run.sh
+        run: tests/no-expr-in-run.sh
+
       # tf-module-ci.yml's validate_directory (tf-aws-static-site, 2026-11-02): only
       # validate and its own init move (the root stays initialised for the tests), the
       # default is ".", and the guard refuses a directory that does not load the
