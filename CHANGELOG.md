@@ -14,6 +14,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This re
   - **Before:** `${{ steps.module-token.outputs.token }}` was pasted into `run:`, so the token was written into the step's script file on the runner. It isn't injectable (a minted App token), but no secret belongs in source. Now it goes through `env:` (`MODULE_TOKEN`).
   - **`tests/no-expr-in-run.sh`** (bash and awk, dependency-free) fails on **any** expression inside a `run:` block. It has its own fixtures (`--self-test`: 4 shapes that must be flagged, 3 that mustn't). **On `main` @ `cb69652`: the 3 token lines.** Found by GITOPS's sweep after PROOF's container-workflows finding (corp `1a99223`).
 
+### Fixed
+
+- **A results comment can no longer fail validation** (`tf-module-ci.yml` "Post Results to PR", `tf-plan.yml` "Post Plan to PR").
+  - **What happened:** on tf-aws-mcp-host#1 (2026-11-12), every check passed, then `createComment` got an **HTTP 500** from the GitHub API. github-script had `retries: 0`, and the job failed.
+  - **Now:** `retries: 3` (github-script retries 5xx; 400/401/403/404/422 stay exempt) and `continue-on-error: true`. The "Fail if …" steps are still the gate.
+  - **`tests/comment-step-guard.sh`** derives every `createComment` step from the workflows and requires both settings. It has 7 mutants, including a new unguarded step.
+
 ### Added
 
 - **`tf-module-ci.yml`: an optional `validate_directory` input, for a module that declares provider `configuration_aliases`** (tf-aws-static-site#3, 2026-11-02).

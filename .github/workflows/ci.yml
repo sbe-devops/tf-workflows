@@ -51,6 +51,11 @@ jobs:
       - name: tests/mutate-module-ci.sh
         run: tests/mutate-module-ci.sh
 
+      # The results comments (tf-module-ci, tf-plan) are reports, never gates: each must be
+      # continue-on-error and retried. Derived from the workflows, with 7 mutants.
+      - name: tests/comment-step-guard.sh
+        run: tests/comment-step-guard.sh
+
       # No ${{ }} inside any run: block (the module token reached script source until
       # 2026-11-14). Its own fixtures first, then every workflow here.
       - name: tests/no-expr-in-run.sh --self-test

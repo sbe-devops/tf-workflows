@@ -283,12 +283,19 @@ jobs:
           echo "terraform executed $((passed + failed)) run(s): $summary"
           # <<< RUNS GUARD END
 
+      # The results comment is a REPORT, never the gate: the "Fail if …" steps below decide.
+      # A GitHub API 5xx on createComment (seen 2026-11-12 on tf-aws-mcp-host#1: HTTP 500,
+      # retries: 0) failed a job whose every check had passed. github-script retries 5xx
+      # itself (400/401/403/404/422 stay exempt), and continue-on-error keeps a comment
+      # that still can't post from failing validation. tests/comment-step-guard.sh pins both.
       - name: Post Results to PR
         uses: actions/github-script@v7
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         env:
           VALIDATE_DIRECTORY: ${{ inputs.validate_directory }}
         with:
+          retries: 3
           script: |
             const fmt      = '${{ steps.fmt.outcome }}';
             const tflint   = '${{ steps.tflint.outcome }}';
