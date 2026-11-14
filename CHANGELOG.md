@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This re
 
 ## [Unreleased]
 
+### Fixed
+
+- **A results comment can no longer fail validation** (`tf-module-ci.yml` "Post Results to PR", `tf-plan.yml` "Post Plan to PR").
+  - **What happened:** on tf-aws-mcp-host#1 (2026-11-12), every check passed, then `createComment` got an **HTTP 500** from the GitHub API. github-script had `retries: 0`, and the job failed.
+  - **Now:** `retries: 3` (github-script retries 5xx; 400/401/403/404/422 stay exempt) and `continue-on-error: true`. The "Fail if …" steps are still the gate.
+  - **`tests/comment-step-guard.sh`** derives every `createComment` step from the workflows and requires both settings. It has 7 mutants, including a new unguarded step.
+
 ### Added
 
 - **`tf-module-ci.yml`: an optional `validate_directory` input, for a module that declares provider `configuration_aliases`** (tf-aws-static-site#3, 2026-11-02).
