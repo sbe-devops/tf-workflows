@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This re
 
 ## [Unreleased]
 
+### Security
+
+- **The private-module token no longer appears in script source** (`tf-plan`, `tf-apply`, `tf-destroy`, "Configure git credentials for private modules").
+  - **Before:** `${{ steps.module-token.outputs.token }}` was pasted into `run:`, so the token was written into the step's script file on the runner. It isn't injectable (a minted App token), but no secret belongs in source. Now it goes through `env:` (`MODULE_TOKEN`).
+  - **`tests/no-expr-in-run.sh`** (bash and awk, dependency-free) fails on **any** expression inside a `run:` block. It has its own fixtures (`--self-test`: 4 shapes that must be flagged, 3 that mustn't). **On `main` @ `cb69652`: the 3 token lines.** Found by GITOPS's sweep after PROOF's container-workflows finding (corp `1a99223`).
+
 ### Fixed
 
 - **A results comment can no longer fail validation** (`tf-module-ci.yml` "Post Results to PR", `tf-plan.yml` "Post Plan to PR").

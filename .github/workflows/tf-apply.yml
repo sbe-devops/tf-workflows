@@ -119,10 +119,14 @@ jobs:
           private-key: ${{ secrets.app_private_key }}
           owner: sbe-devops
 
+      # The token reaches the script through env:, never as ${{ }} in run:, which would write
+      # it into the step's script file on disk (tests/no-expr-in-run.py).
       - name: Configure git credentials for private modules
         if: steps.module-token.conclusion == 'success'
+        env:
+          MODULE_TOKEN: ${{ steps.module-token.outputs.token }}
         run: |
-          git config --global url."https://oauth2:${{ steps.module-token.outputs.token }}@github.com".insteadOf "https://github.com"
+          git config --global url."https://oauth2:${MODULE_TOKEN}@github.com".insteadOf "https://github.com"
 
       - name: Terraform Init
         run: terraform init -input=false -upgrade
